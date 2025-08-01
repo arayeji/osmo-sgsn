@@ -65,6 +65,8 @@ OsmoSGSN(config-sgsn)# list
   no compression v42bis
   compression v42bis active direction (ms|sgsn|both) codewords <512-65535> strlen <6-250>
   compression v42bis passive
+  qos-sm default max-sdu-size (<10-1500>)
+  qos-sm default max-sdu-size (1502|1510|1520)
 ...
 
 OsmoSGSN(config-sgsn)# mme test0
@@ -116,7 +118,7 @@ OsmoSGSN(config-sgsn)# show running-config
 ...
 sgsn
 ...
- no compression v42bis
+ qos-sm default max-sdu-size 1520
  mme test1
   gtp remote-ip 5.6.7.8
 ...

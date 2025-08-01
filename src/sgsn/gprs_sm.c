@@ -63,7 +63,7 @@ static const struct tlv_definition gsm48_sm_att_tlvdef = {
 	},
 };
 
-static struct gsm48_qos default_qos = {
+struct gsm48_qos gprs_sm_default_qos = {
 	.delay_class = 4,	/* best effort */
 	.reliab_class = GSM48_QOS_RC_LLC_UN_RLC_ACK_DATA_PROT,
 	.peak_tput = GSM48_QOS_PEAK_TPUT_32000bps,
@@ -209,13 +209,13 @@ int gsm48_tx_gsm_act_pdp_acc(struct sgsn_pdp_ctx *pdp)
 
 	/* qos_req.l is encoded as 1 (ARP byte) + N QoS profile bytes in GTP.
 	 * Mirror back the same QoS profile length the UE requested, capped at
-	 * sizeof(default_qos) (14 bytes, covering up to R99/R7 QoS format). */
-	uint8_t qos_len = sizeof(default_qos);
+	 * sizeof(gprs_sm_default_qos) (14 bytes, covering up to R99/R7 QoS format). */
+	uint8_t qos_len = sizeof(gprs_sm_default_qos);
 	if (pdp->lib->qos_req.l > 1)
 		qos_len = pdp->lib->qos_req.l - 1;
-	if (qos_len > sizeof(default_qos))
-		qos_len = sizeof(default_qos);
-	msgb_lv_put(msg, qos_len, (uint8_t *)&default_qos);
+	if (qos_len > sizeof(gprs_sm_default_qos))
+		qos_len = sizeof(gprs_sm_default_qos);
+	msgb_lv_put(msg, qos_len, (uint8_t *)&gprs_sm_default_qos);
 
 	/* Radio priority 10.5.7.2 */
 	msgb_v_put(msg, pdp->lib->radio_pri);

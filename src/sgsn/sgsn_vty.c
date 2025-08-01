@@ -66,6 +66,8 @@
 #include <osmocom/sgsn/iu_client.h>
 #endif
 
+extern struct gsm48_qos gprs_sm_default_qos;
+
 static struct sgsn_config *g_cfg = NULL;
 
 const struct value_string sgsn_auth_pol_strs[] = {
@@ -382,6 +384,28 @@ static int config_write_sgsn(struct vty *vty)
 		vty_out(vty, " compression v42bis passive%s", VTY_NEWLINE);
 	} else
 		vty_out(vty, " no compression v42bis%s", VTY_NEWLINE);
+
+#define QOS_SM_DEFAULT_CMD "qos-sm default"
+#define QOS_SM_DEFAULT_CMD_DOC \
+	"QoS (Quality of Service) configuration for the GPRS SM layer\n" \
+	"Default QoS parameters\n"
+
+	/* QoS defaults */
+	switch (gprs_sm_default_qos.max_sdu_size) {
+	case GSM48_QOS_MAXSDU_1502:
+		vty_out(vty, " " QOS_SM_DEFAULT_CMD " max-sdu-size 1502%s", VTY_NEWLINE);
+		break;
+	case GSM48_QOS_MAXSDU_1510:
+		vty_out(vty, " " QOS_SM_DEFAULT_CMD " max-sdu-size 1510%s", VTY_NEWLINE);
+		break;
+	case GSM48_QOS_MAXSDU_1520:
+		vty_out(vty, " " QOS_SM_DEFAULT_CMD " max-sdu-size 1520%s", VTY_NEWLINE);
+		break;
+	default:
+		vty_out(vty, " " QOS_SM_DEFAULT_CMD " max-sdu-size %u%s",
+			gprs_sm_default_qos.max_sdu_size * 10, VTY_NEWLINE);
+		break;
+	}
 
 	llist_for_each_entry(mme, &sgsn->mme_list, list) {
 		config_write_mme(vty, mme, " ");
@@ -1622,6 +1646,49 @@ DEFUN(cfg_comp_v42bisp, cfg_comp_v42bisp_cmd,
 	return CMD_SUCCESS;
 }
 
+DEFUN(cfg_qos_sm_default_max_sdu_size,
+      cfg_qos_sm_default_max_sdu_size_cmd,
+      QOS_SM_DEFAULT_CMD " max-sdu-size (<10-1500>)",
+      QOS_SM_DEFAULT_CMD_DOC
+      "Maximum SDU (Service Data Unit) size\n"
+      "SDU size (must be a multiple of 10)\n")
+{
+	int size = atoi(argv[0]);
+
+	switch (size) {
+	case 1502:
+		gprs_sm_default_qos.max_sdu_size = GSM48_QOS_MAXSDU_1502;
+		break;
+	case 1510:
+		gprs_sm_default_qos.max_sdu_size = GSM48_QOS_MAXSDU_1510;
+		break;
+	case 1520:
+		gprs_sm_default_qos.max_sdu_size = GSM48_QOS_MAXSDU_1520;
+		break;
+	default:
+		if (size < 1 || size > 1500)
+			return CMD_WARNING;
+		if (size % 10 != 0) {
+			vty_out(vty, "%% SDU size in range 1..1500 "
+				"must be a multiple of 10%s", VTY_NEWLINE);
+			return CMD_WARNING;
+		}
+		gprs_sm_default_qos.max_sdu_size = size / 10;
+		break;
+	}
+
+	return CMD_SUCCESS;
+}
+
+ALIAS(cfg_qos_sm_default_max_sdu_size,
+      cfg_qos_sm_default_max_sdu_size_15xx_cmd,
+      QOS_SM_DEFAULT_CMD " max-sdu-size (1502|1510|1520)",
+      QOS_SM_DEFAULT_CMD_DOC
+      "Maximum SDU (Service Data Unit) size\n"
+      "1502 octets\n"
+      "1510 octets\n"
+      "1520 octets\n");
+
 #if BUILD_IU
 DEFUN(cfg_sgsn_cs7_instance_iu,
       cfg_sgsn_cs7_instance_iu_cmd,
@@ -1895,6 +1962,9 @@ int sgsn_vty_init(struct sgsn_config *cfg)
 	install_element(SGSN_NODE, &cfg_no_comp_v42bis_cmd);
 	install_element(SGSN_NODE, &cfg_comp_v42bis_cmd);
 	install_element(SGSN_NODE, &cfg_comp_v42bisp_cmd);
+
+	install_element(SGSN_NODE, &cfg_qos_sm_default_max_sdu_size_cmd);
+	install_element(SGSN_NODE, &cfg_qos_sm_default_max_sdu_size_15xx_cmd);
 
 	install_element(SGSN_NODE, &cfg_sgsn_mme_cmd);
 	install_element(SGSN_NODE, &cfg_sgsn_no_mme_cmd);
