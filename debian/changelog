@@ -1,3 +1,13 @@
+osmo-sgsn (1.14.0) UNRELEASED; urgency=medium
+
+  * NOTE: At the time of tagging 1.13.0, current master was too much in WIP
+    state. Therefore it has been tagged from 6213201b (a commit between 1.12.0
+    and current master) plus several fixes backported on top of that commit:
+    https://gitea.osmocom.org/cellular-infrastructure/osmo-sgsn/commit/ed7b21ffaa2a46a02378edb65a61da2d3d696b7d
+    The next tag should be 1.14.0 (change UNRELEASED -> unstable).
+
+ -- Oliver Smith <osmith@sysmocom.de>  Fri, 06 Mar 2026 09:46:54 +0100
+
 osmo-sgsn (1.12.0) unstable; urgency=medium
 
   [ Andreas Eversberg ]
