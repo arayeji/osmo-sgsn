@@ -67,6 +67,8 @@ OsmoSGSN(config-sgsn)# list
   compression v42bis passive
   qos-sm default max-sdu-size (<10-1500>)
   qos-sm default max-sdu-size (1502|1510|1520)
+  mme NAME
+  no mme NAME
 ...
 
 OsmoSGSN(config-sgsn)# mme test0
