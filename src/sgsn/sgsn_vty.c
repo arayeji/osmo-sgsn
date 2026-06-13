@@ -1465,7 +1465,7 @@ DEFUN(cfg_sgsn_api_token, cfg_sgsn_api_token_cmd,
 	"Bearer token required for API access\n"
 	"The secret token string\n")
 {
-	osmo_talloc_replace_string(g_cfg, &g_cfg->api.token, argv[0]);
+	osmo_talloc_replace_string(sgsn, &sgsn->cfg.api.token, argv[0]);
 	return CMD_SUCCESS;
 }
 
@@ -1475,7 +1475,7 @@ DEFUN(cfg_sgsn_no_api_token, cfg_sgsn_no_api_token_cmd,
 	"HTTP REST API configuration\n"
 	"Remove API token (disables API)\n")
 {
-	osmo_talloc_replace_string(g_cfg, &g_cfg->api.token, NULL);
+	osmo_talloc_replace_string(sgsn, &sgsn->cfg.api.token, NULL);
 	return CMD_SUCCESS;
 }
 

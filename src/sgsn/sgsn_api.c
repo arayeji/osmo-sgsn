@@ -19,10 +19,17 @@
 
 #include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/gprs_gmm.h>
+#include <osmocom/sgsn/gtp_ggsn.h>
+#include <osmocom/sgsn/gtp_mme.h>
 #include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/pdpctx.h>
 #include <osmocom/sgsn/sgsn.h>
 #include <osmocom/sgsn/sgsn_api.h>
+#include <osmocom/gsupclient/gsup_client.h>
+#if BUILD_IU
+#include <osmocom/sgsn/iu_rnc.h>
+#include <osmocom/sigtran/sccp_helpers.h>
+#endif
 
 #define API_CONN_BUF_SIZE (64 * 1024)
 
@@ -274,6 +281,136 @@ static char *build_pdp_list_json(void)
 	return start;
 }
 
+static char *build_links_json(void)
+{
+	char *start, *cur, *esc;
+	size_t space;
+	bool first;
+	struct sgsn_ggsn_ctx *ggsn;
+	struct sgsn_mme_ctx *mme;
+#if BUILD_IU
+	struct ranap_iu_rnc *rnc;
+#endif
+
+	start = talloc_zero_size(g_api_ctx, 64 * 1024);
+	if (!start)
+		return NULL;
+	cur = start;
+	space = 64 * 1024;
+	esc = talloc_size(g_api_ctx, 512);
+	if (!esc)
+		return NULL;
+
+	cur = json_append(cur, start, &space, "{\"api\":[");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/health\",\"auth\":false,\"description\":\"Health check\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/v1/links\",\"auth\":true,\"description\":\"API and network links\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/counts\",\"auth\":true,\"description\":\"Context counts\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/mm\",\"auth\":true,\"description\":\"All MM contexts\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/pdp\",\"auth\":true,\"description\":\"All PDP contexts\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/mm/{imsi}\",\"auth\":true,\"description\":\"One MM context\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"POST\",\"path\":\"/v1/subscribers/{imsi}/disconnect\",\"auth\":true,\"description\":\"Disconnect subscriber PDP sessions\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"POST\",\"path\":\"/v1/subscribers/{imsi}/detach\",\"auth\":true,\"description\":\"Detach subscriber\"}],");
+	cur = json_append(cur, start, &space, "\"network\":{");
+
+	if (sgsn->gsn) {
+		cur = json_append(cur, start, &space, "\"gtp\":{");
+		json_escape(inet_ntoa(sgsn->gsn->gsnc), esc, 512);
+		cur = json_append(cur, start, &space, "\"signalling_ip\":\"%s\",", esc);
+		json_escape(inet_ntoa(sgsn->gsn->gsnu), esc, 512);
+		cur = json_append(cur, start, &space, "\"user_ip\":\"%s\"},", esc);
+	} else {
+		cur = json_append(cur, start, &space, "\"gtp\":null,");
+	}
+
+	json_escape(inet_ntoa(sgsn->cfg.gtp_listenaddr.sin_addr), esc, 512);
+	cur = json_append(cur, start, &space, "\"gtp_local_ip\":\"%s\",", esc);
+
+	cur = json_append(cur, start, &space, "\"ggsn\":[");
+	first = true;
+	llist_for_each_entry(ggsn, &sgsn->ggsn_list, list) {
+		if (ggsn->id == UINT32_MAX)
+			continue;
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		json_escape(inet_ntoa(ggsn->remote_addr), esc, 512);
+		cur = json_append(cur, start, &space,
+				  "{\"id\":%u,\"remote_ip\":\"%s\",\"gtp_version\":%u,\"pdp_count\":%u,\"echo_interval\":%u}",
+				  ggsn->id, esc, ggsn->gtp_version,
+				  llist_count(&ggsn->pdp_list), ggsn->echo_interval);
+	}
+	cur = json_append(cur, start, &space, "],");
+
+	if (sgsn->gsup_client) {
+		cur = json_append(cur, start, &space, "\"gsup\":{");
+		json_escape(osmo_gsup_client_get_rem_addr(sgsn->gsup_client), esc, 512);
+		cur = json_append(cur, start, &space, "\"remote_ip\":\"%s\",", esc);
+		cur = json_append(cur, start, &space, "\"remote_port\":%d,",
+				  osmo_gsup_client_get_rem_port(sgsn->gsup_client));
+		cur = json_append(cur, start, &space, "\"connected\":%s},",
+				  osmo_gsup_client_is_connected(sgsn->gsup_client) ? "true" : "false");
+	} else if (sgsn->cfg.gsup_server_addr.sin_addr.s_addr) {
+		cur = json_append(cur, start, &space, "\"gsup\":{");
+		json_escape(inet_ntoa(sgsn->cfg.gsup_server_addr.sin_addr), esc, 512);
+		cur = json_append(cur, start, &space, "\"remote_ip\":\"%s\",", esc);
+		cur = json_append(cur, start, &space, "\"remote_port\":%d,",
+				  sgsn->cfg.gsup_server_port);
+		cur = json_append(cur, start, &space, "\"connected\":false},");
+	} else {
+		cur = json_append(cur, start, &space, "\"gsup\":null,");
+	}
+
+	cur = json_append(cur, start, &space, "\"mme\":[");
+	first = true;
+	llist_for_each_entry(mme, &sgsn->mme_list, list) {
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		json_escape(mme->name ? mme->name : "", esc, 512);
+		cur = json_append(cur, start, &space, "{\"name\":\"%s\",", esc);
+		json_escape(inet_ntoa(mme->remote_addr), esc, 512);
+		cur = json_append(cur, start, &space,
+				  "\"remote_ip\":\"%s\",\"default_route\":%s}",
+				  esc, mme->default_route ? "true" : "false");
+	}
+
+#if BUILD_IU
+	cur = json_append(cur, start, &space, "],\"iu_rnc\":[");
+	first = true;
+	llist_for_each_entry(rnc, &sgsn->rnc_list, entry) {
+		char *addr_dump;
+
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		json_escape(osmo_rnc_id_name(&rnc->rnc_id), esc, 512);
+		cur = json_append(cur, start, &space, "{\"rnc_id\":\"%s\",", esc);
+		addr_dump = osmo_sccp_addr_dump(&rnc->sccp_addr);
+		json_escape(addr_dump ? addr_dump : "", esc, 512);
+		cur = json_append(cur, start, &space, "\"sccp_addr\":\"%s\",", esc);
+		talloc_free(addr_dump);
+		json_escape(rnc->fi ? osmo_fsm_inst_state_name(rnc->fi) : "unknown", esc, 512);
+		cur = json_append(cur, start, &space,
+				  "\"state\":\"%s\",\"routing_areas\":%u}",
+				  esc, llist_count(&rnc->lac_rac_list));
+	}
+	cur = json_append(cur, start, &space, "]}}");
+#else
+	cur = json_append(cur, start, &space, "]}}");
+#endif
+
+	talloc_free(esc);
+	return start;
+}
+
 static void api_send(struct api_conn *ac, int code, const char *status,
 		     const char *content_type, const char *body)
 {
@@ -343,22 +480,32 @@ static bool auth_ok(const char *hdr)
 static bool parse_path(const char *req, char *method, size_t method_len,
 		       char *path, size_t path_len)
 {
-	const char *sp1, *sp2, *sp3;
-	size_t plen;
+	const char *sp1, *sp2, *eol;
+	size_t mlen, plen;
+
+	eol = strstr(req, "\r\n");
+	if (!eol)
+		eol = strchr(req, '\n');
+	if (!eol)
+		return false;
 
 	sp1 = strchr(req, ' ');
-	if (!sp1)
+	if (!sp1 || sp1 >= eol)
 		return false;
 	sp2 = strchr(sp1 + 1, ' ');
-	if (!sp2)
+	if (!sp2 || sp2 >= eol)
 		return false;
 
-	osmo_strlcpy(method, sp1 + 1, method_len);
-	sp3 = strchr(sp2 + 1, ' ');
-	plen = sp3 ? (size_t)(sp3 - (sp2 + 1)) : strlen(sp2 + 1);
-	if (plen >= path_len)
+	mlen = (size_t)(sp1 - req);
+	if (mlen == 0 || mlen >= method_len)
 		return false;
-	memcpy(path, sp2 + 1, plen);
+	memcpy(method, req, mlen);
+	method[mlen] = '\0';
+
+	plen = (size_t)(sp2 - (sp1 + 1));
+	if (plen == 0 || plen >= path_len)
+		return false;
+	memcpy(path, sp1 + 1, plen);
 	path[plen] = '\0';
 	return path[0] == '/';
 }
@@ -389,6 +536,10 @@ static void handle_request(struct api_conn *ac, const char *req)
 
 	if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/counts")) {
 		body = build_counts_json();
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+			 "application/json", body ? body : "{\"error\":\"oom\"}");
+	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/links")) {
+		body = build_links_json();
 		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 			 "application/json", body ? body : "{\"error\":\"oom\"}");
 	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/mm")) {
