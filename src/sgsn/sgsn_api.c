@@ -510,13 +510,15 @@ static int api_listen_cb(struct osmo_fd *ofd, unsigned int what)
 		return 0;
 	}
 
+	osmo_sock_set_nonblocking(cfd);
+
 	ac = talloc_zero(g_api_ctx, struct api_conn);
 	if (!ac) {
 		close(cfd);
 		return 0;
 	}
 
-	osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, OSMO_FD_F_NONBLOCK);
+	osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, 0);
 	if (osmo_fd_register(&ac->ofd) != 0) {
 		close(cfd);
 		talloc_free(ac);
@@ -540,13 +542,14 @@ int sgsn_api_init(struct sgsn_instance *inst)
 	bind_addr = inet_ntoa(inst->cfg.api.bind_addr);
 	port = inst->cfg.api.port ? inst->cfg.api.port : SGSN_API_DEFAULT_PORT;
 
-	fd = osmo_sock_init(AF_INET, SOCK_STREAM, IPPROTO_TCP, bind_addr, port, OSMO_SOCK_F_BIND);
+	fd = osmo_sock_init(AF_INET, SOCK_STREAM, IPPROTO_TCP, bind_addr, port,
+			    OSMO_SOCK_F_BIND | OSMO_SOCK_F_NONBLOCK);
 	if (fd < 0) {
 		LOGP(DGPRS, LOGL_ERROR, "Failed to open HTTP API on %s:%u\n", bind_addr, port);
 		return -EIO;
 	}
 
-	osmo_fd_setup(&g_api_listen_fd, fd, OSMO_FD_READ, api_listen_cb, NULL, OSMO_FD_F_NONBLOCK);
+	osmo_fd_setup(&g_api_listen_fd, fd, OSMO_FD_READ, api_listen_cb, NULL, 0);
 	if (osmo_fd_register(&g_api_listen_fd) != 0) {
 		LOGP(DGPRS, LOGL_ERROR, "Failed to register HTTP API socket\n");
 		close(fd);
