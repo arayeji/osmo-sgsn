@@ -507,7 +507,7 @@ int sgsn_api_init(struct sgsn_instance *inst)
 	const char *bind_addr;
 	uint16_t port;
 
-	g_api_ctx = inst;
+	g_api_ctx = tall_sgsn_ctx;
 
 	if (!api_enabled()) {
 		LOGP(DGPRS, LOGL_NOTICE, "HTTP API disabled (no api token configured)\n");
