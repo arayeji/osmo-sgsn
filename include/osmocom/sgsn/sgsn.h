@@ -15,6 +15,7 @@
 #include <osmocom/gsm/oap_client.h>
 #include <osmocom/gsupclient/gsup_client.h>
 #include <osmocom/sgsn/common.h>
+#include <osmocom/sgsn/sgsn_api.h>
 
 #if BUILD_IU
 #include <osmocom/sigtran/sccp_sap.h>
@@ -134,6 +135,8 @@ struct sgsn_config {
 	 * If no name is set, the IPA Serial Number will be the same as the Unit Name,
 	 * and will be of the form 'SGSN-00-00-00-00-00-00' */
 	char *sgsn_ipa_name;
+
+	struct sgsn_api_config api;
 };
 
 struct sgsn_instance {

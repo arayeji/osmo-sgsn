@@ -49,6 +49,7 @@
 #include <osmocom/sgsn/gtp_mme.h>
 #include <osmocom/sgsn/vty.h>
 #include <osmocom/sgsn/pdpctx.h>
+#include <osmocom/sgsn/sgsn_api.h>
 #include <osmocom/gsupclient/gsup_client.h>
 
 #include <osmocom/vty/tdef_vty.h>
@@ -261,6 +262,15 @@ static int config_write_sgsn(struct vty *vty)
 		g_cfg->gtp_statedir, VTY_NEWLINE);
 	vty_out(vty, " gtp local-ip %s%s",
 		inet_ntoa(g_cfg->gtp_listenaddr.sin_addr), VTY_NEWLINE);
+
+	if (g_cfg->api.token) {
+		vty_out(vty, " api listen-ip %s%s",
+			inet_ntoa(g_cfg->api.bind_addr), VTY_NEWLINE);
+		vty_out(vty, " api port %u%s",
+			g_cfg->api.port ? g_cfg->api.port : SGSN_API_DEFAULT_PORT,
+			VTY_NEWLINE);
+		vty_out(vty, " api token %s%s", g_cfg->api.token, VTY_NEWLINE);
+	}
 
 	llist_for_each_entry(gctx, &sgsn->ggsn_list, list) {
 		if (gctx->id == UINT32_MAX)
@@ -1405,6 +1415,88 @@ DEFUN(subscr_detach, subscr_detach_cmd,
 	return CMD_SUCCESS;
 }
 
+DEFUN(cfg_sgsn_api_bind, cfg_sgsn_api_bind_cmd,
+	"api bind A.B.C.D <1-65535>",
+	"HTTP REST API configuration\n"
+	"Bind address and port (shorthand)\n"
+	"Local IP address\n"
+	"TCP port\n")
+{
+	struct in_addr ia;
+
+	if (inet_aton(argv[0], &ia) == 0) {
+		vty_out(vty, "%% invalid IP address %s%s", argv[0], VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+	g_cfg->api.bind_addr = ia;
+	g_cfg->api.port = atoi(argv[1]);
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_sgsn_api_listen_ip, cfg_sgsn_api_listen_ip_cmd,
+	"api listen-ip A.B.C.D",
+	"HTTP REST API configuration\n"
+	"Local IP address to listen on\n"
+	"IP address (use 0.0.0.0 for all interfaces)\n")
+{
+	struct in_addr ia;
+
+	if (inet_aton(argv[0], &ia) == 0) {
+		vty_out(vty, "%% invalid IP address %s%s", argv[0], VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+	g_cfg->api.bind_addr = ia;
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_sgsn_api_port, cfg_sgsn_api_port_cmd,
+	"api port <1-65535>",
+	"HTTP REST API configuration\n"
+	"TCP port to listen on\n"
+	"Port number\n")
+{
+	g_cfg->api.port = atoi(argv[0]);
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_sgsn_api_token, cfg_sgsn_api_token_cmd,
+	"api token TOKEN",
+	"HTTP REST API configuration\n"
+	"Bearer token required for API access\n"
+	"The secret token string\n")
+{
+	osmo_talloc_replace_string(g_cfg, &g_cfg->api.token, argv[0]);
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_sgsn_no_api_token, cfg_sgsn_no_api_token_cmd,
+	"no api token",
+	NO_STR
+	"HTTP REST API configuration\n"
+	"Remove API token (disables API)\n")
+{
+	osmo_talloc_replace_string(g_cfg, &g_cfg->api.token, NULL);
+	return CMD_SUCCESS;
+}
+
+DEFUN(show_sgsn_api, show_sgsn_api_cmd,
+	"show api",
+	SHOW_STR "Display HTTP REST API settings\n")
+{
+	if (!g_cfg->api.token || !g_cfg->api.token[0]) {
+		vty_out(vty, "HTTP API: disabled (no token configured)%s", VTY_NEWLINE);
+		return CMD_SUCCESS;
+	}
+
+	vty_out(vty, "HTTP API: enabled%s", VTY_NEWLINE);
+	vty_out(vty, "  listen-ip: %s%s", inet_ntoa(g_cfg->api.bind_addr), VTY_NEWLINE);
+	vty_out(vty, "  port: %u%s",
+		g_cfg->api.port ? g_cfg->api.port : SGSN_API_DEFAULT_PORT,
+		VTY_NEWLINE);
+	vty_out(vty, "  token: %s%s", g_cfg->api.token, VTY_NEWLINE);
+	return CMD_SUCCESS;
+}
+
 DEFUN(cfg_gsup_ipa_name,
 	cfg_gsup_ipa_name_cmd,
 	"gsup ipa-name NAME",
@@ -1936,6 +2028,7 @@ int sgsn_vty_init(struct sgsn_config *cfg)
 	g_cfg = cfg;
 
 	install_element_ve(&show_sgsn_cmd);
+	install_element_ve(&show_sgsn_api_cmd);
 	//install_element_ve(&show_mmctx_tlli_cmd);
 	install_element_ve(&show_mmctx_imsi_cmd);
 	install_element_ve(&show_mmctx_all_cmd);
@@ -1975,6 +2068,11 @@ int sgsn_vty_init(struct sgsn_config *cfg)
 	install_element(SGSN_NODE, &cfg_encrypt_cipher_plugin_path_cmd);
 	install_element(SGSN_NODE, &cfg_no_encrypt_cipher_plugin_path_cmd);
 
+	install_element(SGSN_NODE, &cfg_sgsn_api_bind_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_api_listen_ip_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_api_port_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_api_token_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_no_api_token_cmd);
 	install_element(SGSN_NODE, &cfg_gsup_ipa_name_cmd);
 	install_element(SGSN_NODE, &cfg_gsup_remote_ip_cmd);
 	install_element(SGSN_NODE, &cfg_gsup_remote_port_cmd);

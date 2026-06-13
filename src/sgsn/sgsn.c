@@ -20,6 +20,7 @@
  */
 
 #include <stdint.h>
+#include <arpa/inet.h>
 
 #include "config.h"
 
@@ -192,6 +193,8 @@ struct sgsn_instance *sgsn_instance_alloc(void *talloc_ctx)
 	inst->cfg.uea_encryption_mask = (1 << OSMO_UTRAN_UEA2) | (1 << OSMO_UTRAN_UEA1);
 	inst->cfg.require_authentication = true; /* only applies if auth_policy is REMOTE */
 	inst->cfg.gsup_server_port = OSMO_GSUP_PORT;
+	inst->cfg.api.bind_addr.s_addr = htonl(INADDR_ANY);
+	inst->cfg.api.port = SGSN_API_DEFAULT_PORT;
 
 	inst->cfg.T_defs = sgsn_T_defs;
 	osmo_tdefs_reset(inst->cfg.T_defs);
@@ -253,5 +256,10 @@ int sgsn_inst_init(struct sgsn_instance *sgsn)
 		return rc;
 	}
 #endif /* #if BUILD_IU */
+
+	rc = sgsn_api_init(sgsn);
+	if (rc < 0)
+		LOGP(DGPRS, LOGL_ERROR, "Failed to start HTTP API\n");
+
 	return 0;
 }

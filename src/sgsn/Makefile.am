@@ -17,6 +17,7 @@ AM_CFLAGS = \
 	$(COVERAGE_CFLAGS) \
 	$(LIBCARES_CFLAGS) \
 	$(LIBGTP_CFLAGS) \
+	$(LIBOSMONETIF_CFLAGS) \
 	$(NULL)
 if BUILD_IU
 AM_CFLAGS += \
@@ -67,6 +68,7 @@ osmo_sgsn_SOURCES = \
 	mmctx.c \
 	pdpctx.c \
 	sgsn_ctrl.c \
+	sgsn_api.c \
 	sgsn_auth.c \
 	gprs_subscriber.c \
 	sgsn_cdr.c \
@@ -84,6 +86,7 @@ osmo_sgsn_LDADD = \
 	$(LIBOSMOGSUPCLIENT_LIBS) \
 	$(LIBCARES_LIBS) \
 	$(LIBGTP_LIBS) \
+	$(LIBOSMONETIF_LIBS) \
 	-lrt \
 	-lm \
 	$(NULL)

@@ -18,6 +18,6 @@ apt-get update -qq
 apt-get install -y \
   build-essential autoconf automake libtool pkg-config \
   python3 python3-pip python3-venv python3-osmopy-utils \
-  libosmocore-dev libosmo-gsup-client-dev libosmo-abis-dev libgtp-dev
+  libosmocore-dev libosmo-gsup-client-dev libosmo-abis-dev libgtp-dev libosmo-netif-dev
 
 pkg-config --modversion libosmocore libgtp libosmogsm libosmogb libosmovty
