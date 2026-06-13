@@ -2,18 +2,20 @@
 
 #include <stdarg.h>
 #include <strings.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 
-#include <osmocom/core/msgb.h>
+#include <osmocom/core/select.h>
+#include <osmocom/core/socket.h>
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/utils.h>
 #include <osmocom/gtp/pdp.h>
 #include <osmocom/gsm/apn.h>
 #include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
-#include <osmocom/netif/stream.h>
 
 #include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/gprs_gmm.h>
@@ -25,12 +27,13 @@
 #define API_CONN_BUF_SIZE (64 * 1024)
 
 struct api_conn {
-	struct osmo_stream_srv *conn;
+	struct osmo_fd ofd;
 	char buf[API_CONN_BUF_SIZE];
 	size_t len;
 };
 
-static struct osmo_stream_srv_link *g_api_link;
+static struct osmo_fd g_api_listen_fd;
+static bool g_api_listen_registered;
 static void *g_api_ctx;
 
 static bool api_enabled(void)
@@ -271,24 +274,28 @@ static char *build_pdp_list_json(void)
 	return start;
 }
 
-static void api_send(struct osmo_stream_srv *conn, int code, const char *status,
+static void api_send(struct api_conn *ac, int code, const char *status,
 		     const char *content_type, const char *body)
 {
-	struct msgb *msg;
+	char *resp;
 	size_t body_len = body ? strlen(body) : 0;
-
-	msg = msgb_alloc(512 + body_len, "sgsn-api-resp");
-	if (!msg)
-		return;
+	ssize_t rc;
 
 	if (content_type && body)
-		msgb_printf(msg, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
-			    code, status, content_type, body_len, body);
+		resp = talloc_asprintf(g_api_ctx,
+				       "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+				       code, status, content_type, body_len, body);
 	else
-		msgb_printf(msg, "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-			    code, status);
+		resp = talloc_asprintf(g_api_ctx,
+				       "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+				       code, status);
+	if (!resp)
+		return;
 
-	osmo_stream_srv_send(conn, msg);
+	rc = write(ac->ofd.fd, resp, strlen(resp));
+	if (rc < 0)
+		LOGP(DGPRS, LOGL_ERROR, "HTTP API write failed: %s\n", strerror(errno));
+	talloc_free(resp);
 }
 
 static const char *find_header(const char *hdr, const char *name)
@@ -316,7 +323,7 @@ static const char *find_header(const char *hdr, const char *name)
 static bool auth_ok(const char *hdr)
 {
 	const char *auth;
-	char expect[256];
+	char expect[512];
 	size_t auth_len;
 
 	if (!api_enabled())
@@ -356,7 +363,7 @@ static bool parse_path(const char *req, char *method, size_t method_len,
 	return path[0] == '/';
 }
 
-static void handle_request(struct osmo_stream_srv *conn, const char *req)
+static void handle_request(struct api_conn *ac, const char *req)
 {
 	char method[16] = {};
 	char path[256] = {};
@@ -365,42 +372,42 @@ static void handle_request(struct osmo_stream_srv *conn, const char *req)
 	struct sgsn_mm_ctx *mm;
 
 	if (!parse_path(req, method, sizeof(method), path, sizeof(path))) {
-		api_send(conn, 400, "Bad Request", NULL, NULL);
+		api_send(ac, 400, "Bad Request", NULL, NULL);
 		return;
 	}
 
 	if (strcmp(path, "/health") == 0) {
-		api_send(conn, 200, "OK", "application/json", "{\"status\":\"ok\"}");
+		api_send(ac, 200, "OK", "application/json", "{\"status\":\"ok\"}");
 		return;
 	}
 
 	if (!auth_ok(req)) {
-		api_send(conn, 401, "Unauthorized", "application/json",
+		api_send(ac, 401, "Unauthorized", "application/json",
 			 "{\"error\":\"invalid or missing token\"}");
 		return;
 	}
 
 	if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/counts")) {
 		body = build_counts_json();
-		api_send(conn, body ? 200 : 500, body ? "OK" : "Error",
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 			 "application/json", body ? body : "{\"error\":\"oom\"}");
 	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/mm")) {
 		body = build_mm_list_json(true);
-		api_send(conn, body ? 200 : 500, body ? "OK" : "Error",
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 			 "application/json", body ? body : "{\"error\":\"oom\"}");
 	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/pdp")) {
 		body = build_pdp_list_json();
-		api_send(conn, body ? 200 : 500, body ? "OK" : "Error",
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 			 "application/json", body ? body : "{\"error\":\"oom\"}");
 	} else if (!strncmp(method, "GET", 3) && !strncmp(path, "/v1/contexts/mm/", 16)) {
 		imsi = path + 16;
 		mm = sgsn_mm_ctx_by_imsi(imsi);
 		if (!mm)
-			api_send(conn, 404, "Not Found", "application/json",
+			api_send(ac, 404, "Not Found", "application/json",
 				 "{\"error\":\"mm context not found\"}");
 		else {
 			body = build_mm_json(mm, true);
-			api_send(conn, body ? 200 : 500, body ? "OK" : "Error",
+			api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 				 "application/json", body ? body : "{\"error\":\"oom\"}");
 		}
 	} else if (!strncmp(method, "POST", 4) && !strncmp(path, "/v1/subscribers/", 16)) {
@@ -409,12 +416,12 @@ static void handle_request(struct osmo_stream_srv *conn, const char *req)
 		char imsi_buf[GSM23003_IMSI_MAX_DIGITS + 1];
 
 		if (!action) {
-			api_send(conn, 404, "Not Found", "application/json",
+			api_send(ac, 404, "Not Found", "application/json",
 				 "{\"error\":\"unknown endpoint\"}");
 			return;
 		}
 		if ((size_t)(action - suffix) >= sizeof(imsi_buf)) {
-			api_send(conn, 400, "Bad Request", "application/json",
+			api_send(ac, 400, "Bad Request", "application/json",
 				 "{\"error\":\"imsi too long\"}");
 			return;
 		}
@@ -422,24 +429,24 @@ static void handle_request(struct osmo_stream_srv *conn, const char *req)
 		imsi_buf[action - suffix] = '\0';
 		mm = sgsn_mm_ctx_by_imsi(imsi_buf);
 		if (!mm) {
-			api_send(conn, 404, "Not Found", "application/json",
+			api_send(ac, 404, "Not Found", "application/json",
 				 "{\"error\":\"mm context not found\"}");
 			return;
 		}
 		if (!strcmp(action, "/disconnect")) {
 			gsm0408_gprs_access_cancelled(mm, SGSN_ERROR_CAUSE_NONE);
-			api_send(conn, 200, "OK", "application/json",
+			api_send(ac, 200, "OK", "application/json",
 				 "{\"ok\":true,\"action\":\"disconnect\"}");
 		} else if (!strcmp(action, "/detach")) {
 			gsm0408_gprs_access_denied(mm, GMM_CAUSE_IMPL_DETACHED);
-			api_send(conn, 200, "OK", "application/json",
+			api_send(ac, 200, "OK", "application/json",
 				 "{\"ok\":true,\"action\":\"detach\"}");
 		} else {
-			api_send(conn, 404, "Not Found", "application/json",
+			api_send(ac, 404, "Not Found", "application/json",
 				 "{\"error\":\"unknown action\"}");
 		}
 	} else {
-		api_send(conn, 404, "Not Found", "application/json",
+		api_send(ac, 404, "Not Found", "application/json",
 			 "{\"error\":\"not found\"}");
 	}
 
@@ -447,58 +454,73 @@ static void handle_request(struct osmo_stream_srv *conn, const char *req)
 		talloc_free(body);
 }
 
-static int api_conn_read_cb(struct osmo_stream_srv *conn)
+static void api_client_close(struct api_conn *ac)
 {
-	struct api_conn *ac = osmo_stream_srv_get_data(conn);
-	struct msgb *msg = msgb_alloc(4096, "sgsn-api-rx");
-	int rc;
+	osmo_fd_unregister(&ac->ofd);
+	close(ac->ofd.fd);
+	talloc_free(ac);
+}
+
+static int api_client_cb(struct osmo_fd *ofd, unsigned int what)
+{
+	struct api_conn *ac = ofd->data;
 	char *hdr_end;
+	ssize_t rc;
 
-	if (!ac || !msg)
-		return -1;
+	if (!(what & OSMO_FD_READ))
+		return 0;
 
-	rc = osmo_stream_srv_recv(conn, msg);
+	rc = read(ofd->fd, ac->buf + ac->len, sizeof(ac->buf) - ac->len - 1);
 	if (rc <= 0) {
-		msgb_free(msg);
-		return rc;
-	}
-
-	if (ac->len + msg->len >= sizeof(ac->buf)) {
-		msgb_free(msg);
-		api_send(conn, 413, "Payload Too Large", NULL, NULL);
+		api_client_close(ac);
 		return -1;
 	}
 
-	memcpy(ac->buf + ac->len, msg->data, msg->len);
-	ac->len += msg->len;
+	ac->len += rc;
 	ac->buf[ac->len] = '\0';
-	msgb_free(msg);
+
+	if (ac->len + 1 >= sizeof(ac->buf)) {
+		api_send(ac, 413, "Payload Too Large", NULL, NULL);
+		api_client_close(ac);
+		return -1;
+	}
 
 	hdr_end = strstr(ac->buf, "\r\n\r\n");
 	if (!hdr_end)
 		return 0;
 
 	*hdr_end = '\0';
-	handle_request(conn, ac->buf);
-	osmo_stream_srv_set_flush_and_destroy(conn);
+	handle_request(ac, ac->buf);
+	api_client_close(ac);
 	return 0;
 }
 
-static int api_link_accept_cb(struct osmo_stream_srv_link *link, int fd)
+static int api_listen_cb(struct osmo_fd *ofd, unsigned int what)
 {
 	struct api_conn *ac;
+	int cfd;
+
+	if (!(what & OSMO_FD_READ))
+		return 0;
+
+	cfd = accept(ofd->fd, NULL, NULL);
+	if (cfd < 0) {
+		if (errno != EAGAIN && errno != EINTR)
+			LOGP(DGPRS, LOGL_ERROR, "HTTP API accept failed: %s\n", strerror(errno));
+		return 0;
+	}
 
 	ac = talloc_zero(g_api_ctx, struct api_conn);
-	if (!ac)
-		return -1;
-
-	ac->conn = osmo_stream_srv_create(g_api_ctx, link, fd, api_conn_read_cb, NULL, ac);
-	if (!ac->conn) {
-		talloc_free(ac);
-		return -1;
+	if (!ac) {
+		close(cfd);
+		return 0;
 	}
-	osmo_stream_srv_set_data(ac->conn, ac);
-	osmo_stream_srv_set_name(ac->conn, "sgsn-api-client");
+
+	osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, OSMO_FD_F_NONBLOCK);
+	if (osmo_fd_register(&ac->ofd) != 0) {
+		close(cfd);
+		talloc_free(ac);
+	}
 	return 0;
 }
 
@@ -506,6 +528,7 @@ int sgsn_api_init(struct sgsn_instance *inst)
 {
 	const char *bind_addr;
 	uint16_t port;
+	int fd;
 
 	g_api_ctx = tall_sgsn_ctx;
 
@@ -517,31 +540,29 @@ int sgsn_api_init(struct sgsn_instance *inst)
 	bind_addr = inet_ntoa(inst->cfg.api.bind_addr);
 	port = inst->cfg.api.port ? inst->cfg.api.port : SGSN_API_DEFAULT_PORT;
 
-	g_api_link = osmo_stream_srv_link_create(g_api_ctx);
-	if (!g_api_link)
-		return -ENOMEM;
-
-	osmo_stream_srv_link_set_name(g_api_link, "sgsn-api");
-	osmo_stream_srv_link_set_addr(g_api_link, bind_addr);
-	osmo_stream_srv_link_set_port(g_api_link, port);
-	osmo_stream_srv_link_set_accept_cb(g_api_link, api_link_accept_cb);
-
-	if (osmo_stream_srv_link_open(g_api_link) != 0) {
+	fd = osmo_sock_init(AF_INET, SOCK_STREAM, IPPROTO_TCP, bind_addr, port, OSMO_SOCK_F_BIND);
+	if (fd < 0) {
 		LOGP(DGPRS, LOGL_ERROR, "Failed to open HTTP API on %s:%u\n", bind_addr, port);
-		osmo_stream_srv_link_destroy(g_api_link);
-		g_api_link = NULL;
 		return -EIO;
 	}
 
+	osmo_fd_setup(&g_api_listen_fd, fd, OSMO_FD_READ, api_listen_cb, NULL, OSMO_FD_F_NONBLOCK);
+	if (osmo_fd_register(&g_api_listen_fd) != 0) {
+		LOGP(DGPRS, LOGL_ERROR, "Failed to register HTTP API socket\n");
+		close(fd);
+		return -EIO;
+	}
+
+	g_api_listen_registered = true;
 	LOGP(DGPRS, LOGL_NOTICE, "HTTP API listening on %s:%u\n", bind_addr, port);
 	return 0;
 }
 
 void sgsn_api_shutdown(void)
 {
-	if (g_api_link) {
-		osmo_stream_srv_link_close(g_api_link);
-		osmo_stream_srv_link_destroy(g_api_link);
-		g_api_link = NULL;
+	if (g_api_listen_registered) {
+		osmo_fd_unregister(&g_api_listen_fd);
+		close(g_api_listen_fd.fd);
+		g_api_listen_registered = false;
 	}
 }
