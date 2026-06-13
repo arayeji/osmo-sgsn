@@ -40,6 +40,7 @@
 #include <osmocom/core/select.h>
 #include <osmocom/core/rate_ctr.h>
 #include <osmocom/gprs/gprs_bssgp.h>
+#include <osmocom/gsm/apn.h>
 #include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
 
 #include <osmocom/gtp/gtp.h>
@@ -137,24 +138,69 @@ static uint64_t imsi_str2gtp(char *str)
 	return imsi64;
 }
 
+static struct sgsn_subscriber_data *mmctx_sgsn_data(struct sgsn_mm_ctx *mmctx)
+{
+	struct gprs_subscr *gsub;
+
+	if (!mmctx)
+		return NULL;
+	if (mmctx->subscr && mmctx->subscr->sgsn_data)
+		return mmctx->subscr->sgsn_data;
+	if (!mmctx->imsi[0])
+		return NULL;
+
+	gsub = gprs_subscr_get_by_imsi(mmctx->imsi);
+	if (!gsub || !gsub->sgsn_data)
+		return NULL;
+	return gsub->sgsn_data;
+}
+
 static struct sgsn_subscriber_pdp_data *
-sgsn_subscr_pdp_by_apn(struct sgsn_mm_ctx *mmctx,
-		       const uint8_t *apn_wire, size_t apn_wire_len)
+sgsn_subscr_pdp_by_apn_str(struct sgsn_subscriber_data *sdata, const char *apn_str)
 {
 	struct sgsn_subscriber_pdp_data *pdp;
-	char apn_str[GSM_APN_LENGTH];
 
-	if (!mmctx || !mmctx->subscr || !mmctx->subscr->sgsn_data)
-		return NULL;
-	if (!apn_wire || apn_wire_len == 0)
-		return NULL;
-	if (osmo_apn_to_str(apn_str, apn_wire, apn_wire_len) <= 0)
+	if (!sdata || !apn_str || !apn_str[0])
 		return NULL;
 
-	llist_for_each_entry(pdp, &mmctx->subscr->sgsn_data->pdp_list, list) {
+	llist_for_each_entry(pdp, &sdata->pdp_list, list) {
 		if (!strcasecmp(pdp->apn_str, apn_str))
 			return pdp;
 	}
+	return NULL;
+}
+
+static struct sgsn_subscriber_pdp_data *
+sgsn_subscr_pdp_lookup(struct sgsn_mm_ctx *mmctx, const char *selected_apn,
+		       const uint8_t *apn_wire, size_t apn_wire_len)
+{
+	struct sgsn_subscriber_data *sdata = mmctx_sgsn_data(mmctx);
+	struct sgsn_subscriber_pdp_data *pdp = NULL;
+	char apn_str[GSM_APN_LENGTH];
+	unsigned count = 0;
+	struct sgsn_subscriber_pdp_data *only = NULL;
+
+	if (!sdata)
+		return NULL;
+
+	if (selected_apn && selected_apn[0])
+		pdp = sgsn_subscr_pdp_by_apn_str(sdata, selected_apn);
+	if (pdp)
+		return pdp;
+
+	if (apn_wire && apn_wire_len > 0 &&
+	    osmo_apn_to_str(apn_str, apn_wire, apn_wire_len) > 0)
+		pdp = sgsn_subscr_pdp_by_apn_str(sdata, apn_str);
+	if (pdp)
+		return pdp;
+
+	llist_for_each_entry(pdp, &sdata->pdp_list, list) {
+		count++;
+		only = pdp;
+	}
+	if (count == 1)
+		return only;
+
 	return NULL;
 }
 
@@ -182,7 +228,8 @@ static void gtp_eua_set_ipv4(struct pdp_t *pdp, uint32_t addr)
 struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
 					 struct sgsn_mm_ctx *mmctx,
 					 uint16_t nsapi,
-					 struct tlv_parsed *tp)
+					 struct tlv_parsed *tp,
+					 const char *selected_apn)
 {
 	struct osmo_routing_area_id rai = {};
 	struct sgsn_pdp_ctx *pctx;
@@ -254,13 +301,18 @@ struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
 	/* HLR/HSS static IPv4 from GSUP INSERT_DATA (pdp_address). */
 	{
 		struct sgsn_subscriber_pdp_data *sub_pdp = NULL;
+		const uint8_t *apn_wire = NULL;
+		size_t apn_wire_len = 0;
 
-		if (pdp->apn_use.l)
-			sub_pdp = sgsn_subscr_pdp_by_apn(mmctx, pdp->apn_use.v, pdp->apn_use.l);
-		if (!sub_pdp && TLVP_PRESENT(tp, GSM48_IE_GSM_APN))
-			sub_pdp = sgsn_subscr_pdp_by_apn(mmctx,
-				TLVP_VAL(tp, GSM48_IE_GSM_APN),
-				TLVP_LEN(tp, GSM48_IE_GSM_APN));
+		if (pdp->apn_use.l) {
+			apn_wire = pdp->apn_use.v;
+			apn_wire_len = pdp->apn_use.l;
+		} else if (TLVP_PRESENT(tp, GSM48_IE_GSM_APN)) {
+			apn_wire = TLVP_VAL(tp, GSM48_IE_GSM_APN);
+			apn_wire_len = TLVP_LEN(tp, GSM48_IE_GSM_APN);
+		}
+
+		sub_pdp = sgsn_subscr_pdp_lookup(mmctx, selected_apn, apn_wire, apn_wire_len);
 
 		if (sub_pdp && sub_pdp->pdp_address[0].u.sa.sa_family == AF_INET
 		    && !gtp_eua_has_ipv4(pdp)) {
@@ -270,6 +322,10 @@ struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
 			LOGPDPCTXP(LOGL_NOTICE, pctx,
 				   "Using subscribed static IPv4 %s in Create-PDP EUA\n", ip);
 			gtp_eua_set_ipv4(pdp, sub_pdp->pdp_address[0].u.sin.sin_addr.s_addr);
+		} else if (sub_pdp && sub_pdp->pdp_address[0].u.sa.sa_family == AF_INET
+			   && gtp_eua_has_ipv4(pdp)) {
+			LOGPDPCTXP(LOGL_INFO, pctx,
+				   "UE requested PDP address; not overriding subscribed static IPv4\n");
 		}
 	}
 

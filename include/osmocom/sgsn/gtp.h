@@ -21,7 +21,8 @@ void sgsn_ggsn_echo_req(struct sgsn_ggsn_ctx *ggc);
 struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
 					 struct sgsn_mm_ctx *mmctx,
 					 uint16_t nsapi,
-					 struct tlv_parsed *tp);
+					 struct tlv_parsed *tp,
+					 const char *selected_apn);
 
 int sgsn_gtp_data_req(struct osmo_routing_area_id *rai, int32_t tlli, uint8_t nsapi,
 		      struct msgb *msg, uint32_t npdu_len, uint8_t *npdu);

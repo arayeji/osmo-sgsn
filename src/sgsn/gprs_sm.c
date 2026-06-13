@@ -319,13 +319,14 @@ int gsm48_tx_gsm_deact_pdp_acc(struct sgsn_pdp_ctx *pdp)
 static int activate_ggsn(struct sgsn_mm_ctx *mmctx,
 		struct sgsn_ggsn_ctx *ggsn, const uint8_t transaction_id,
 		const uint8_t req_nsapi, const uint8_t req_llc_sapi,
-		struct tlv_parsed *tp, int destroy_ggsn)
+		struct tlv_parsed *tp, const char *selected_apn,
+		int destroy_ggsn)
 {
 	struct sgsn_pdp_ctx *pdp;
 
 	LOGMMCTXP(LOGL_DEBUG, mmctx, "Using GGSN %u\n", ggsn->id);
 	ggsn->gsn = sgsn->gsn;
-	pdp = sgsn_create_pdp_ctx(ggsn, mmctx, req_nsapi, tp);
+	pdp = sgsn_create_pdp_ctx(ggsn, mmctx, req_nsapi, tp, selected_apn);
 	if (!pdp)
 		return -1;
 
@@ -406,7 +407,7 @@ static void ggsn_lookup_cb(void *arg, int status, int timeouts, struct hostent *
 	lookup->mmctx->ggsn_lookup = NULL;
 
 	activate_ggsn(lookup->mmctx, ggsn, lookup->ti, lookup->nsapi,
-			lookup->sapi, &lookup->tp, 1);
+			lookup->sapi, &lookup->tp, lookup->apn_str, 1);
 
 	/* Now free it */
 	talloc_free(lookup->orig_msg);
@@ -556,7 +557,7 @@ static int do_act_pdp_req(struct sgsn_mm_ctx *mmctx, struct msgb *msg, bool *del
 	if (ggsn)
 		return activate_ggsn(mmctx, ggsn, transaction_id,
 				act_req->req_nsapi, act_req->req_llc_sapi,
-				&tp, 0);
+				&tp, apn_str, 0);
 
 	if (strlen(apn_str) == 0)
 		goto no_context;
