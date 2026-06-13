@@ -1367,6 +1367,44 @@ DEFUN(page_subscr, page_subscr_info_cmd,
 	return CMD_SUCCESS;
 }
 
+DEFUN(subscr_disconnect, subscr_disconnect_cmd,
+	"subscriber imsi IMSI disconnect",
+	"Subscriber management\n"
+	"Identify by IMSI\n"
+	"The IMSI\n"
+	"Remove MM context locally without signalling the MS\n")
+{
+	struct sgsn_mm_ctx *mm;
+
+	mm = sgsn_mm_ctx_by_imsi(argv[0]);
+	if (!mm) {
+		vty_out(vty, "No MM context for IMSI %s%s", argv[0], VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	gsm0408_gprs_access_cancelled(mm, SGSN_ERROR_CAUSE_NONE);
+	return CMD_SUCCESS;
+}
+
+DEFUN(subscr_detach, subscr_detach_cmd,
+	"subscriber imsi IMSI detach",
+	"Subscriber management\n"
+	"Identify by IMSI\n"
+	"The IMSI\n"
+	"Detach the MS from the network (GMM Detach Request)\n")
+{
+	struct sgsn_mm_ctx *mm;
+
+	mm = sgsn_mm_ctx_by_imsi(argv[0]);
+	if (!mm) {
+		vty_out(vty, "No MM context for IMSI %s%s", argv[0], VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	gsm0408_gprs_access_denied(mm, GMM_CAUSE_IMPL_DETACHED);
+	return CMD_SUCCESS;
+}
+
 DEFUN(cfg_gsup_ipa_name,
 	cfg_gsup_ipa_name_cmd,
 	"gsup ipa-name NAME",
@@ -1913,6 +1951,8 @@ int sgsn_vty_init(struct sgsn_config *cfg)
 	install_element(ENABLE_NODE, &update_subscr_update_location_result_cmd);
 	install_element(ENABLE_NODE, &update_subscr_update_auth_info_cmd);
 	install_element(ENABLE_NODE, &page_subscr_info_cmd);
+	install_element(ENABLE_NODE, &subscr_disconnect_cmd);
+	install_element(ENABLE_NODE, &subscr_detach_cmd);
 	install_element(ENABLE_NODE, &reset_sgsn_state_cmd);
 
 	install_element(CONFIG_NODE, &cfg_sgsn_cmd);

@@ -387,6 +387,19 @@ static void gprs_subscr_gsup_insert_data(struct gprs_subscr *subscr,
 		}
 		pdp_data->qos_subscribed_len = pdp_info->qos_enc_len;
 
+		memcpy(&pdp_data->pdp_address[0], &pdp_info->pdp_address[0],
+		       sizeof(pdp_data->pdp_address[0]));
+		memcpy(&pdp_data->pdp_address[1], &pdp_info->pdp_address[1],
+		       sizeof(pdp_data->pdp_address[1]));
+
+		if (pdp_data->pdp_address[0].u.sa.sa_family == AF_INET) {
+			char ip[INET_ADDRSTRLEN];
+			osmo_sockaddr_ntop(&pdp_data->pdp_address[0].u.sa, ip);
+			LOGGSUBSCRP(LOGL_INFO, subscr,
+				    "Static PDP IPv4 %s (ctx=%zu APN %s)\n",
+				    ip, ctx_id, pdp_data->apn_str);
+		}
+
 		if (pdp_info->pdp_charg_enc && pdp_info->pdp_charg_enc_len >= sizeof(pdp_data->pdp_charg)) {
 			memcpy(&pdp_data->pdp_charg, pdp_info->pdp_charg_enc, sizeof(pdp_data->pdp_charg));
 			pdp_data->has_pdp_charg = 1;

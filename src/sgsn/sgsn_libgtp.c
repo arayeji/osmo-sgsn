@@ -137,6 +137,46 @@ static uint64_t imsi_str2gtp(char *str)
 	return imsi64;
 }
 
+static struct sgsn_subscriber_pdp_data *
+sgsn_subscr_pdp_by_apn(struct sgsn_mm_ctx *mmctx,
+		       const uint8_t *apn_wire, size_t apn_wire_len)
+{
+	struct sgsn_subscriber_pdp_data *pdp;
+	char apn_str[GSM_APN_LENGTH];
+
+	if (!mmctx || !mmctx->subscr || !mmctx->subscr->sgsn_data)
+		return NULL;
+	if (!apn_wire || apn_wire_len == 0)
+		return NULL;
+	if (osmo_apn_to_str(apn_str, apn_wire, apn_wire_len) <= 0)
+		return NULL;
+
+	llist_for_each_entry(pdp, &mmctx->subscr->sgsn_data->pdp_list, list) {
+		if (!strcasecmp(pdp->apn_str, apn_str))
+			return pdp;
+	}
+	return NULL;
+}
+
+static bool gtp_eua_has_ipv4(const struct pdp_t *pdp)
+{
+	if (pdp->eua.l < 6)
+		return false;
+	if ((pdp->eua.v[0] & 0x0f) != PDP_TYPE_ORG_IETF)
+		return false;
+	if (pdp->eua.v[1] != PDP_TYPE_N_IETF_IPv4)
+		return false;
+	return *(const uint32_t *)(pdp->eua.v + 2) != 0;
+}
+
+static void gtp_eua_set_ipv4(struct pdp_t *pdp, uint32_t addr)
+{
+	pdp->eua.l = 6;
+	pdp->eua.v[0] = 0xF1;
+	pdp->eua.v[1] = PDP_TYPE_N_IETF_IPv4;
+	memcpy(pdp->eua.v + 2, &addr, 4);
+}
+
 /* generate a PDP context based on the IE's from the 04.08 message,
  * and send the GTP create pdp context request to the GGSN */
 struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
@@ -210,6 +250,27 @@ struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
 		memcpy(pdp->apn_use.v, TLVP_VAL(tp, GSM48_IE_GSM_APN), pdp->apn_use.l);
 	} else {
 		pdp->apn_use.l = 0;
+	}
+	/* HLR/HSS static IPv4 from GSUP INSERT_DATA (pdp_address). */
+	{
+		struct sgsn_subscriber_pdp_data *sub_pdp = NULL;
+
+		if (pdp->apn_use.l)
+			sub_pdp = sgsn_subscr_pdp_by_apn(mmctx, pdp->apn_use.v, pdp->apn_use.l);
+		if (!sub_pdp && TLVP_PRESENT(tp, GSM48_IE_GSM_APN))
+			sub_pdp = sgsn_subscr_pdp_by_apn(mmctx,
+				TLVP_VAL(tp, GSM48_IE_GSM_APN),
+				TLVP_LEN(tp, GSM48_IE_GSM_APN));
+
+		if (sub_pdp && sub_pdp->pdp_address[0].u.sa.sa_family == AF_INET
+		    && !gtp_eua_has_ipv4(pdp)) {
+			char ip[INET_ADDRSTRLEN];
+
+			osmo_sockaddr_ntop(&sub_pdp->pdp_address[0].u.sa, ip);
+			LOGPDPCTXP(LOGL_NOTICE, pctx,
+				   "Using subscribed static IPv4 %s in Create-PDP EUA\n", ip);
+			gtp_eua_set_ipv4(pdp, sub_pdp->pdp_address[0].u.sin.sin_addr.s_addr);
+		}
 	}
 
 	/* Protocol Configuration Options from GMM */
