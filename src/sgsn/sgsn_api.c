@@ -510,7 +510,7 @@ static int api_listen_cb(struct osmo_fd *ofd, unsigned int what)
 		return 0;
 	}
 
-	osmo_sock_set_nonblock(cfd);
+	osmo_sock_set_nonblock(cfd, 1);
 
 	ac = talloc_zero(g_api_ctx, struct api_conn);
 	if (!ac) {
