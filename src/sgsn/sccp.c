@@ -408,7 +408,10 @@ int sgsn_sccp_init(struct sgsn_instance *sgi)
 	osmo_sccp_set_priv(sgi->sccp.sccp, sgsn);
 
 	sgi->sccp.scu_iups = sgsn_scu_iups_inst_alloc(sgsn, sgi->sccp.sccp);
-	OSMO_ASSERT(sgi->sccp.scu_iups);
+	if (!sgi->sccp.scu_iups) {
+		LOGP(DGPRS, LOGL_ERROR, "Setting up Iu SCCP user failed\n");
+		return -EINVAL;
+	}
 
 	return 0;
 }

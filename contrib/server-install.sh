@@ -29,9 +29,7 @@ cd "$SRC"
 if [[ ! -f configure ]]; then
   autoreconf -fi
 fi
-if [[ ! -f Makefile ]]; then
-  ./configure --disable-iu --prefix=/usr
-fi
+./configure --enable-iu --prefix=/usr
 
 make -j"$(nproc)"
 make install

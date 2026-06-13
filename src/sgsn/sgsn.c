@@ -251,10 +251,8 @@ int sgsn_inst_init(struct sgsn_instance *sgsn)
 
 #if BUILD_IU
 	rc = sgsn_sccp_init(sgsn);
-	if (rc < 0) {
-		LOGP(DGPRS, LOGL_FATAL, "Cannot set up SGSN SCCP layer\n");
-		return rc;
-	}
+	if (rc < 0)
+		LOGP(DGPRS, LOGL_NOTICE, "SGSN SCCP layer not available, continuing in 2G mode\n");
 #endif /* #if BUILD_IU */
 
 	rc = sgsn_api_init(sgsn);
