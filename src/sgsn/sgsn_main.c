@@ -60,6 +60,7 @@
 #include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/vty.h>
 #include <osmocom/sgsn/sgsn.h>
+#include <osmocom/sgsn/sgsn_api.h>
 #include <osmocom/sgsn/gprs_llc.h>
 #include <osmocom/sgsn/gprs_sndcp.h>
 #include <osmocom/sgsn/gprs_gmm.h>
@@ -476,6 +477,10 @@ int main(int argc, char **argv)
 #if BUILD_IU
 	ranap_iu_init(tall_sgsn_ctx);
 #endif
+
+	rc = sgsn_api_init(sgsn);
+	if (rc < 0)
+		LOGP(DGPRS, LOGL_ERROR, "Failed to start HTTP API\n");
 
 	if (daemonize) {
 		rc = osmo_daemonize();

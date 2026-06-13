@@ -255,9 +255,5 @@ int sgsn_inst_init(struct sgsn_instance *sgsn)
 		LOGP(DGPRS, LOGL_NOTICE, "SGSN SCCP layer not available, continuing in 2G mode\n");
 #endif /* #if BUILD_IU */
 
-	rc = sgsn_api_init(sgsn);
-	if (rc < 0)
-		LOGP(DGPRS, LOGL_ERROR, "Failed to start HTTP API\n");
-
 	return 0;
 }
