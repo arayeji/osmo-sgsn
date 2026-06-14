@@ -8,11 +8,12 @@ IP=127.0.0.1
 grep -vE '^ api |^ iu-release-pdp-action |^ rnc-loss-pdp-action |^ unreachable-pdp-timer ' "$CFG" > "$WORKDIR/cfg.new"
 
 if grep -q ' cs7-instance-iu ' "$WORKDIR/cfg.new"; then
-	sed -i '/ cs7-instance-iu /i  iu-release-pdp-action delete-gn\n rnc-loss-pdp-action delete-gn' "$WORKDIR/cfg.new"
+	sed -i '/ cs7-instance-iu /i  iu-release-pdp-action delete-gn\n rnc-loss-pdp-action delete-gn\n unreachable-pdp-timer 3600' "$WORKDIR/cfg.new"
 else
 	cat >> "$WORKDIR/cfg.new" <<'GNCFG'
  iu-release-pdp-action delete-gn
  rnc-loss-pdp-action delete-gn
+ unreachable-pdp-timer 3600
 GNCFG
 fi
 

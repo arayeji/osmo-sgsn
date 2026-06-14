@@ -33,6 +33,7 @@
 #include <osmocom/sgsn/gtp_ggsn.h>
 #include <osmocom/sgsn/pdpctx.h>
 #include <osmocom/sgsn/mmctx.h>
+#include <osmocom/sgsn/sgsn_pdp_gn.h>
 
 #define X(s) (1 << (s))
 
@@ -103,8 +104,8 @@ static void st_pmm_connected(struct osmo_fsm_inst *fi, uint32_t event, void *dat
 			sgsn_mm_ctx_delete_all_pdp_gn(ctx);
 		} else {
 			mmctx_change_gtpu_endpoints_to_sgsn(ctx, NULL);
-			sgsn_mm_iu_unreachable_timer_start(ctx);
 		}
+		sgsn_mm_iu_unreachable_timer_start(ctx);
 		break;
 	case E_PMM_PS_DETACH:
 		sgsn_mm_iu_unreachable_timer_stop(ctx);
@@ -122,8 +123,8 @@ static void st_pmm_connected(struct osmo_fsm_inst *fi, uint32_t event, void *dat
 			sgsn_mm_ctx_delete_all_pdp_gn(ctx);
 		} else {
 			mmctx_change_gtpu_endpoints_to_sgsn(ctx, pctx);
-			sgsn_mm_iu_unreachable_timer_start(ctx);
 		}
+		sgsn_mm_iu_unreachable_timer_start(ctx);
 		break;
 	}
 }
