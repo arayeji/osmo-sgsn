@@ -102,6 +102,7 @@ osmo_sgsn_SOURCES += \
 	iu_rnc.c \
 	iu_rnc_fsm.c \
 	sccp.c \
+	sgsn_pdp_gn.c \
 	$(NULL)
 
 endif

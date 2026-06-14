@@ -120,16 +120,24 @@ struct sgsn_ggsn_ctx *sgsn_ggsn_ctx_find_alloc(struct sgsn_instance *sgsn, uint3
 
 void sgsn_ggsn_ctx_drop_pdp(struct sgsn_pdp_ctx *pctx)
 {
-	/* the MM context can be deleted while the GGSN is not reachable or
-	 * if has been crashed. */
+	if (!pctx)
+		return;
+
+	if (pctx->lib && pctx->ggsn) {
+		if (pctx->mm && pctx->mm->gmm_fsm->state == ST_GMM_REGISTERED_NORMAL)
+			gsm48_tx_gsm_deact_pdp_req(pctx, GSM_CAUSE_NET_FAIL, true);
+		LOGPDPCTXP(LOGL_NOTICE, pctx, "Dropping PDP ctx, deleting on Gn first\n");
+		sgsn_delete_pdp_ctx(pctx);
+		return;
+	}
+
+	/* libgtp already tore down the GTP library handle (cb_delete_context) */
 	if (pctx->mm && pctx->mm->gmm_fsm->state == ST_GMM_REGISTERED_NORMAL) {
 		gsm48_tx_gsm_deact_pdp_req(pctx, GSM_CAUSE_NET_FAIL, true);
-		sgsn_ggsn_ctx_remove_pdp(pctx->ggsn, pctx);
-	} else  {
-		/* FIXME: GPRS paging in case MS is SUSPENDED */
-		LOGPDPCTXP(LOGL_NOTICE, pctx, "Hard-dropping PDP ctx due to GGSN "
-			"recovery\n");
-		/* FIXME: how to tell this to libgtp? */
+		if (pctx->ggsn)
+			sgsn_ggsn_ctx_remove_pdp(pctx->ggsn, pctx);
+	} else {
+		LOGPDPCTXP(LOGL_NOTICE, pctx, "Hard-dropping PDP ctx due to GGSN recovery\n");
 		sgsn_pdp_ctx_free(pctx);
 	}
 }

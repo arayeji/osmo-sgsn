@@ -54,6 +54,9 @@
 #include <osmocom/sgsn/gprs_gmm_fsm.h>
 #include <osmocom/sgsn/gprs_llc.h>
 #include <osmocom/sgsn/gprs_ranap.h>
+#ifdef BUILD_IU
+#include <osmocom/sgsn/sgsn_pdp_gn.h>
+#endif
 #include <osmocom/sgsn/gprs_sndcp.h>
 #include <osmocom/sgsn/gtp_ggsn.h>
 #include <osmocom/sgsn/gtp.h>
@@ -215,6 +218,7 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_alloc(uint32_t rate_ctr_id)
 	ctx->iu.mm_state_fsm = osmo_fsm_inst_alloc(&mm_state_iu_fsm, ctx, ctx, LOGL_DEBUG, NULL);
 	if (!ctx->iu.mm_state_fsm)
 		goto out;
+	sgsn_mm_iu_unreachable_timer_init(ctx);
 #endif
 
 	INIT_LLIST_HEAD(&ctx->pdp_list);
@@ -288,6 +292,10 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_alloc_iu(void *uectx)
 static void sgsn_mm_ctx_free(struct sgsn_mm_ctx *mm)
 {
 	struct sgsn_pdp_ctx *pdp, *pdp2;
+
+#ifdef BUILD_IU
+	sgsn_mm_iu_unreachable_timer_stop(mm);
+#endif
 
 	/* Unlink from global list of MM contexts */
 	llist_del(&mm->list);

@@ -138,6 +138,7 @@ struct sgsn_mm_ctx {
 		struct service_info	service;
 		/* TS 23.060 6.1.2 Mobility Management States (Iu mode) */
 		struct osmo_fsm_inst	*mm_state_fsm;
+		struct osmo_timer_list	unreachable_gn_pdp_timer;
 	} iu;
 	struct {
 		struct osmo_fsm_inst *fsm;

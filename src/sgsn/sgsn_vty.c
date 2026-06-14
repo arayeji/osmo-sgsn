@@ -422,6 +422,17 @@ static int config_write_sgsn(struct vty *vty)
 	}
 
 #ifdef BUILD_IU
+	vty_out(vty, " iu-release-pdp-action %s%s",
+		g_cfg->iu.iu_release_pdp == SGSN_IU_RELEASE_PDP_DELETE_GN ?
+			"delete-gn" : "idle-update",
+		VTY_NEWLINE);
+	vty_out(vty, " rnc-loss-pdp-action %s%s",
+		g_cfg->iu.rnc_loss_pdp == SGSN_RNC_LOSS_PDP_DELETE_GN ?
+			"delete-gn" : "keep",
+		VTY_NEWLINE);
+	if (g_cfg->iu.unreachable_pdp_timer_sec)
+		vty_out(vty, " unreachable-pdp-timer %u%s",
+			g_cfg->iu.unreachable_pdp_timer_sec, VTY_NEWLINE);
 	vty_out(vty, " cs7-instance-iu %u%s", g_cfg->iu.cs7_instance,
 		VTY_NEWLINE);
 	ranap_iu_vty_config_write(vty, " ");
@@ -1820,6 +1831,44 @@ ALIAS(cfg_qos_sm_default_max_sdu_size,
       "1520 octets\n");
 
 #if BUILD_IU
+DEFUN(cfg_sgsn_iu_release_pdp_action,
+      cfg_sgsn_iu_release_pdp_action_cmd,
+      "iu-release-pdp-action (idle-update|delete-gn)",
+      "Policy for PDP contexts when the Iu PS connection is released\n"
+      "Keep PDP on GGSN and send Update PDP (legacy/default 3GPP idle behaviour)\n"
+      "Delete PDP contexts on Gn toward the GGSN\n")
+{
+	if (!strcmp(argv[0], "delete-gn"))
+		g_cfg->iu.iu_release_pdp = SGSN_IU_RELEASE_PDP_DELETE_GN;
+	else
+		g_cfg->iu.iu_release_pdp = SGSN_IU_RELEASE_PDP_IDLE_UPDATE;
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_sgsn_rnc_loss_pdp_action,
+      cfg_sgsn_rnc_loss_pdp_action_cmd,
+      "rnc-loss-pdp-action (keep|delete-gn)",
+      "Policy for PDP contexts when an RNC becomes unavailable\n"
+      "Keep PDP contexts on Gn (UE contexts are discarded locally)\n"
+      "Delete PDP contexts on Gn toward the GGSN for UEs on that RNC\n")
+{
+	if (!strcmp(argv[0], "delete-gn"))
+		g_cfg->iu.rnc_loss_pdp = SGSN_RNC_LOSS_PDP_DELETE_GN;
+	else
+		g_cfg->iu.rnc_loss_pdp = SGSN_RNC_LOSS_PDP_KEEP;
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_sgsn_unreachable_pdp_timer,
+      cfg_sgsn_unreachable_pdp_timer_cmd,
+      "unreachable-pdp-timer <0-86400>",
+      "Timer to delete Gn PDP contexts for PMM-IDLE UEs without Iu (0=disabled, seconds)\n"
+      "Timeout in seconds\n")
+{
+	g_cfg->iu.unreachable_pdp_timer_sec = atoi(argv[0]);
+	return CMD_SUCCESS;
+}
+
 DEFUN(cfg_sgsn_cs7_instance_iu,
       cfg_sgsn_cs7_instance_iu_cmd,
       "cs7-instance-iu <0-15>",
@@ -2116,6 +2165,9 @@ int sgsn_vty_init(struct sgsn_config *cfg)
 	install_element(MME_NODE, &cfg_mme_no_ran_info_relay_tai_cmd);
 
 #ifdef BUILD_IU
+	install_element(SGSN_NODE, &cfg_sgsn_iu_release_pdp_action_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_rnc_loss_pdp_action_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_unreachable_pdp_timer_cmd);
 	install_element(SGSN_NODE, &cfg_sgsn_cs7_instance_iu_cmd);
 	ranap_iu_vty_init(SGSN_NODE, &g_cfg->iu.rab_assign_addr_enc);
 #endif

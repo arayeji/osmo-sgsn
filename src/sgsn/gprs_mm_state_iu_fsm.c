@@ -97,9 +97,17 @@ static void st_pmm_connected(struct osmo_fsm_inst *fi, uint32_t event, void *dat
 	case E_PMM_PS_CONN_RELEASE:
 		sgsn_mm_ctx_iu_ranap_free(ctx);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_IDLE);
-		mmctx_change_gtpu_endpoints_to_sgsn(ctx, NULL);
+		if (sgsn->cfg.iu.iu_release_pdp == SGSN_IU_RELEASE_PDP_DELETE_GN) {
+			LOGMMCTXP(LOGL_NOTICE, ctx,
+				  "Iu release: deleting PDP contexts on Gn (policy delete-gn)\n");
+			sgsn_mm_ctx_delete_all_pdp_gn(ctx);
+		} else {
+			mmctx_change_gtpu_endpoints_to_sgsn(ctx, NULL);
+			sgsn_mm_iu_unreachable_timer_start(ctx);
+		}
 		break;
 	case E_PMM_PS_DETACH:
+		sgsn_mm_iu_unreachable_timer_stop(ctx);
 		sgsn_mm_ctx_iu_ranap_release_free(ctx, NULL);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_DETACHED);
 		break;
@@ -110,19 +118,28 @@ static void st_pmm_connected(struct osmo_fsm_inst *fi, uint32_t event, void *dat
 		pctx = (struct sgsn_pdp_ctx *)data;
 		sgsn_mm_ctx_iu_ranap_free(ctx);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_IDLE);
-		mmctx_change_gtpu_endpoints_to_sgsn(ctx, pctx);
+		if (sgsn->cfg.iu.iu_release_pdp == SGSN_IU_RELEASE_PDP_DELETE_GN) {
+			sgsn_mm_ctx_delete_all_pdp_gn(ctx);
+		} else {
+			mmctx_change_gtpu_endpoints_to_sgsn(ctx, pctx);
+			sgsn_mm_iu_unreachable_timer_start(ctx);
+		}
 		break;
 	}
 }
 
 static void st_pmm_idle(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 {
+	struct sgsn_mm_ctx *ctx = fi->priv;
+
 	switch(event) {
 	case E_PMM_PS_ATTACH:
 	case E_PMM_PS_CONN_ESTABLISH:
+		sgsn_mm_iu_unreachable_timer_stop(ctx);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_CONNECTED);
 		break;
 	case E_PMM_PS_DETACH:
+		sgsn_mm_iu_unreachable_timer_stop(ctx);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_DETACHED);
 		break;
 	case E_PMM_RX_GGSN_GTPU_DT_EI:

@@ -20,6 +20,16 @@
 #if BUILD_IU
 #include <osmocom/sigtran/sccp_sap.h>
 #include <osmocom/sgsn/iu_client.h>
+
+enum sgsn_iu_release_pdp_action {
+	SGSN_IU_RELEASE_PDP_IDLE_UPDATE,
+	SGSN_IU_RELEASE_PDP_DELETE_GN,
+};
+
+enum sgsn_rnc_loss_pdp_action {
+	SGSN_RNC_LOSS_PDP_KEEP,
+	SGSN_RNC_LOSS_PDP_DELETE_GN,
+};
 #endif
 
 #include <ares.h>
@@ -127,6 +137,9 @@ struct sgsn_config {
 	struct {
 		enum ranap_nsap_addr_enc rab_assign_addr_enc;
 		uint32_t cs7_instance;
+		enum sgsn_iu_release_pdp_action iu_release_pdp;
+		enum sgsn_rnc_loss_pdp_action rnc_loss_pdp;
+		unsigned int unreachable_pdp_timer_sec;
 	} iu;
 #endif
 

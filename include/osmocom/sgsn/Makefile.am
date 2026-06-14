@@ -35,6 +35,7 @@ noinst_HEADERS = \
 	sccp.h \
 	sgsn.h \
 	sgsn_api.h \
+	sgsn_pdp_gn.h \
 	sgsn_rim.h \
 	signal.h \
 	slhc.h \

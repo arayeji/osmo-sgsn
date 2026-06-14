@@ -43,6 +43,7 @@
 #include <osmocom/sgsn/iu_rnc_fsm.h>
 #include <osmocom/sgsn/sccp.h>
 #include <osmocom/sgsn/sgsn.h>
+#include <osmocom/sgsn/sgsn_pdp_gn.h>
 
 static struct ranap_iu_rnc *iu_rnc_alloc(const struct osmo_rnc_id *rnc_id,
 					 struct sgsn_sccp_user_iups *scu_iups,
@@ -205,6 +206,8 @@ void iu_rnc_update_rai_seen(struct ranap_iu_rnc *rnc, const struct osmo_routing_
 
 void iu_rnc_discard_all_ue_ctx(struct ranap_iu_rnc *rnc)
 {
+	sgsn_rnc_drop_all_pdp_gn(rnc);
+
 	struct ranap_ue_conn_ctx *ue_ctx, *ue_ctx_tmp;
 
 	llist_for_each_entry_safe(ue_ctx, ue_ctx_tmp, &sgsn->sccp.scu_iups->ue_conn_ctx_list, list) {
