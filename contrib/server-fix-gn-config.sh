@@ -10,7 +10,7 @@ GN_IU_RELEASE=" iu-release-pdp-action delete-gn"
 GN_RNC_LOSS=" rnc-loss-pdp-action delete-gn"
 GN_UNREACHABLE=" unreachable-pdp-timer 3600"
 
-TOKEN=$(grep '^ api token ' "$CFG" 2>/dev/null | awk '{print $4}' || true)
+TOKEN=$(grep '^ api token ' "$CFG" 2>/dev/null | sed 's/^ api token //' | head -1 || true)
 if [ -z "${TOKEN:-}" ]; then
 	TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
 fi
