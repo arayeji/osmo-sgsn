@@ -12,6 +12,8 @@
 #include <osmocom/core/select.h>
 #include <osmocom/core/socket.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/logging.h>
+#include <osmocom/core/linuxlist.h>
 #include <osmocom/core/utils.h>
 #include <osmocom/gtp/pdp.h>
 #include <osmocom/gsm/apn.h>
@@ -317,7 +319,13 @@ static char *build_links_json(void)
 	cur = json_append(cur, start, &space,
 			  "{\"method\":\"POST\",\"path\":\"/v1/subscribers/{imsi}/disconnect\",\"auth\":true,\"description\":\"Disconnect subscriber PDP sessions\"},");
 	cur = json_append(cur, start, &space,
-			  "{\"method\":\"POST\",\"path\":\"/v1/subscribers/{imsi}/detach\",\"auth\":true,\"description\":\"Detach subscriber\"}],");
+			  "{\"method\":\"POST\",\"path\":\"/v1/subscribers/{imsi}/detach\",\"auth\":true,\"description\":\"Detach subscriber\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/v1/trace\",\"auth\":true,\"description\":\"List active IMSI debug traces\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"POST\",\"path\":\"/v1/trace/{imsi}\",\"auth\":true,\"description\":\"Enable IMSI debug trace\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"DELETE\",\"path\":\"/v1/trace/{imsi}\",\"auth\":true,\"description\":\"Disable IMSI debug trace\"}],");
 	cur = json_append(cur, start, &space, "\"network\":{");
 
 	if (sgsn->gsn) {
@@ -510,6 +518,236 @@ static bool parse_path(const char *req, char *method, size_t method_len,
 	return path[0] == '/';
 }
 
+/* ---- per-IMSI debug trace ----
+ *
+ * OsmoSGSN does not attach a per-message subscriber log context (it only writes
+ * the IMSI into the log text, e.g. "MM(<imsi>/...)"), so the VLR-style context
+ * filter that OsmoMSC uses is not available here. Instead we install a dedicated
+ * libosmocore log target whose output callback keeps only the lines that mention
+ * the traced IMSI, and appends them to a per-IMSI file. This is the OsmoSGSN
+ * equivalent of the Open5GS IMSI trace and, unlike the MSC, it can be armed
+ * before the subscriber attaches (it matches on text, not a live context).
+ */
+
+struct sgsn_api_trace {
+	struct llist_head entry;
+	char imsi[16];
+	struct log_target *target;
+};
+
+static LLIST_HEAD(g_api_traces);
+
+static struct sgsn_api_trace *api_trace_find(const char *imsi)
+{
+	struct sgsn_api_trace *t;
+
+	llist_for_each_entry(t, &g_api_traces, entry) {
+		if (!strcmp(t->imsi, imsi))
+			return t;
+	}
+	return NULL;
+}
+
+/* libosmocore log target output callback: keep only lines mentioning the traced
+ * IMSI and write them to stderr, so the daemon's journald unit captures them. */
+static void api_trace_log_output(struct log_target *tgt, unsigned int level, const char *line)
+{
+	struct sgsn_api_trace *t;
+
+	llist_for_each_entry(t, &g_api_traces, entry) {
+		if (t->target != tgt)
+			continue;
+		if (strstr(line, t->imsi)) {
+			fputs(line, stderr);
+			fflush(stderr);
+		}
+		return;
+	}
+}
+
+static bool api_valid_imsi(const char *imsi)
+{
+	const char *p;
+	size_t n = 0;
+
+	if (!imsi || !imsi[0])
+		return false;
+	for (p = imsi; *p; p++, n++) {
+		if (*p < '0' || *p > '9')
+			return false;
+	}
+	return n >= 5 && n <= 15;
+}
+
+/* Returns 0 on success (*out set), negative errno otherwise. */
+static int api_trace_enable(const char *imsi, struct sgsn_api_trace **out)
+{
+	struct sgsn_api_trace *t;
+	struct log_target *tgt;
+
+	t = api_trace_find(imsi);
+	if (t) {
+		*out = t;	/* idempotent */
+		return 0;
+	}
+
+	t = talloc_zero(g_api_ctx, struct sgsn_api_trace);
+	if (!t)
+		return -ENOMEM;
+	osmo_strlcpy(t->imsi, imsi, sizeof(t->imsi));
+
+	tgt = log_target_create();
+	if (!tgt) {
+		talloc_free(t);
+		return -ENOMEM;
+	}
+	tgt->output = api_trace_log_output;
+	/* gprs_log_filter_fn() would otherwise deny a target with no filters set;
+	 * pass everything to our output callback and substring-filter by IMSI there. */
+	log_set_all_filter(tgt, 1);
+	log_set_log_level(tgt, LOGL_DEBUG);
+	log_set_use_color(tgt, 0);
+	log_set_print_category(tgt, 1);
+	log_set_print_category_hex(tgt, 0);
+	log_set_print_level(tgt, 1);
+	log_set_print_extended_timestamp(tgt, 1);
+
+	t->target = tgt;
+	llist_add_tail(&t->entry, &g_api_traces);
+	log_add_target(tgt);
+
+	LOGP(DGPRS, LOGL_NOTICE, "API enabled IMSI debug trace for %s (-> journal)\n", imsi);
+	*out = t;
+	return 0;
+}
+
+static int api_trace_disable(const char *imsi)
+{
+	struct sgsn_api_trace *t = api_trace_find(imsi);
+
+	if (!t)
+		return -ENOENT;
+
+	llist_del(&t->entry);
+	if (t->target)
+		log_target_destroy(t->target);
+	LOGP(DGPRS, LOGL_NOTICE, "API disabled IMSI debug trace for %s\n", imsi);
+	talloc_free(t);
+	return 0;
+}
+
+static char *build_trace_json(const struct sgsn_api_trace *t, const char *status)
+{
+	char eimsi[32];
+
+	json_escape(t->imsi, eimsi, sizeof(eimsi));
+	return talloc_asprintf(g_api_ctx,
+		"{\"status\":\"%s\",\"imsi\":\"%s\",\"output\":\"journal\",\"level\":\"debug\"}",
+		status, eimsi);
+}
+
+static char *build_trace_list_json(void)
+{
+	struct sgsn_api_trace *t;
+	char *start, *cur;
+	size_t space = 16 * 1024;
+	bool first = true;
+
+	start = talloc_zero_size(g_api_ctx, space);
+	if (!start)
+		return NULL;
+	cur = start;
+	cur = json_append(cur, start, &space, "{\"traces\":[");
+	llist_for_each_entry(t, &g_api_traces, entry) {
+		char eimsi[32];
+
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		json_escape(t->imsi, eimsi, sizeof(eimsi));
+		cur = json_append(cur, start, &space,
+				  "{\"imsi\":\"%s\",\"output\":\"journal\",\"level\":\"debug\"}",
+				  eimsi);
+	}
+	cur = json_append(cur, start, &space, "]}");
+	return start;
+}
+
+/* Handle /v1/trace[...]. Returns true if it was a trace route. */
+static bool handle_trace(struct api_conn *ac, const char *method, const char *path)
+{
+	char *body;
+	const char *imsi;
+	struct sgsn_api_trace *t;
+	int rc;
+
+	if (!strcmp(method, "GET") && !strcmp(path, "/v1/trace")) {
+		body = build_trace_list_json();
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+			 "application/json", body ? body : "{\"error\":\"oom\"}");
+		if (body)
+			talloc_free(body);
+		return true;
+	}
+
+	if (strncmp(path, "/v1/trace/", 10) != 0)
+		return false;
+
+	imsi = path + 10;
+	if (!api_valid_imsi(imsi)) {
+		api_send(ac, 400, "Bad Request", "application/json",
+			 "{\"error\":\"invalid IMSI\"}");
+		return true;
+	}
+
+	if (!strcmp(method, "POST") || !strcmp(method, "PUT")) {
+		rc = api_trace_enable(imsi, &t);
+		if (rc < 0) {
+			api_send(ac, 500, "Error", "application/json",
+				 "{\"error\":\"failed to enable trace\"}");
+			return true;
+		}
+		body = build_trace_json(t, "enabled");
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+			 "application/json", body ? body : "{\"error\":\"oom\"}");
+		if (body)
+			talloc_free(body);
+		return true;
+	}
+
+	if (!strcmp(method, "DELETE")) {
+		rc = api_trace_disable(imsi);
+		if (rc == -ENOENT) {
+			api_send(ac, 404, "Not Found", "application/json",
+				 "{\"error\":\"no active trace for this IMSI\"}");
+			return true;
+		}
+		body = talloc_asprintf(g_api_ctx, "{\"status\":\"disabled\",\"imsi\":\"%s\"}", imsi);
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+			 "application/json", body ? body : "{\"error\":\"oom\"}");
+		if (body)
+			talloc_free(body);
+		return true;
+	}
+
+	if (!strcmp(method, "GET")) {
+		t = api_trace_find(imsi);
+		if (!t) {
+			api_send(ac, 404, "Not Found", "application/json",
+				 "{\"error\":\"no active trace for this IMSI\"}");
+			return true;
+		}
+		body = build_trace_json(t, "active");
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+			 "application/json", body ? body : "{\"error\":\"oom\"}");
+		if (body)
+			talloc_free(body);
+		return true;
+	}
+
+	return false;
+}
+
 static void handle_request(struct api_conn *ac, const char *req)
 {
 	char method[16] = {};
@@ -533,6 +771,9 @@ static void handle_request(struct api_conn *ac, const char *req)
 			 "{\"error\":\"invalid or missing token\"}");
 		return;
 	}
+
+	if (handle_trace(ac, method, path))
+		return;
 
 	if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/counts")) {
 		body = build_counts_json();
@@ -714,6 +955,15 @@ int sgsn_api_init(struct sgsn_instance *inst)
 
 void sgsn_api_shutdown(void)
 {
+	struct sgsn_api_trace *t, *t2;
+
+	llist_for_each_entry_safe(t, t2, &g_api_traces, entry) {
+		llist_del(&t->entry);
+		if (t->target)
+			log_target_destroy(t->target);
+		talloc_free(t);
+	}
+
 	if (g_api_listen_registered) {
 		osmo_fd_unregister(&g_api_listen_fd);
 		close(g_api_listen_fd.fd);
