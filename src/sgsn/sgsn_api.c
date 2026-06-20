@@ -394,7 +394,7 @@ static char *build_links_json(void)
 	cur = json_append(cur, start, &space, "],\"iu_rnc\":[");
 	first = true;
 	llist_for_each_entry(rnc, &sgsn->rnc_list, entry) {
-		char *addr_dump;
+		const char *addr_dump;
 
 		if (!first)
 			cur = json_append(cur, start, &space, ",");
@@ -404,7 +404,6 @@ static char *build_links_json(void)
 		addr_dump = osmo_sccp_addr_dump(&rnc->sccp_addr);
 		json_escape(addr_dump ? addr_dump : "", esc, 512);
 		cur = json_append(cur, start, &space, "\"sccp_addr\":\"%s\",", esc);
-		talloc_free(addr_dump);
 		json_escape(rnc->fi ? osmo_fsm_inst_state_name(rnc->fi) : "unknown", esc, 512);
 		cur = json_append(cur, start, &space,
 				  "\"state\":\"%s\",\"routing_areas\":%u}",
