@@ -155,7 +155,7 @@ static void iu_rnc_st_wait_rx_reset(struct osmo_fsm_inst *fi, uint32_t event, vo
 		return;
 
 	case IU_RNC_EV_UNAVAILABLE:
-		/* Do nothing, wait for peer to come up again. */
+		iu_rnc_discard_all_ue_ctx(rnc);
 		return;
 
 	default:

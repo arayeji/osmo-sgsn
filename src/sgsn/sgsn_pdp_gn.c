@@ -11,11 +11,12 @@
 #include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/pdpctx.h>
 #include <osmocom/sgsn/sgsn.h>
-#include <osmocom/sgsn/sgsn_pdp_gn.h>
 
 #if BUILD_IU
 
 #include <osmocom/sgsn/gprs_ranap.h>
+#include <osmocom/sgsn/iu_client.h>
+#include <osmocom/sgsn/sccp.h>
 
 static bool mm_has_active_gn_pdp(const struct sgsn_mm_ctx *mm)
 {
@@ -97,19 +98,54 @@ void sgsn_mm_ctx_delete_all_pdp_gn(struct sgsn_mm_ctx *mm)
 	}
 }
 
-void sgsn_rnc_drop_all_pdp_gn(struct ranap_iu_rnc *rnc)
+static void sgsn_mm_iu_handle_rnc_loss(struct sgsn_mm_ctx *mm)
 {
-	struct sgsn_mm_ctx *mm, *mm2;
+	struct osmo_fsm_inst *fi;
 
-	if (!rnc || sgsn->cfg.iu.rnc_loss_pdp != SGSN_RNC_LOSS_PDP_DELETE_GN)
+	if (!mm || mm->ran_type != MM_CTX_T_UTRAN_Iu)
 		return;
 
-	LOG_RNC(rnc, LOGL_NOTICE, "RNC unreachable, deleting Gn PDP contexts for served UEs\n");
+	sgsn_mm_iu_unreachable_timer_stop(mm);
+	fi = mm->iu.mm_state_fsm;
 
+	if (fi && fi->state == ST_PMM_CONNECTED) {
+		/* Iu is gone: PMM-IDLE. iu_release policy may Update GTP; rnc_loss
+		 * delete-gn below overrides that toward the GGSN (TS 23.060). */
+		osmo_fsm_inst_dispatch(fi, E_PMM_PS_CONN_RELEASE, NULL);
+	} else {
+		sgsn_mm_ctx_iu_ranap_free(mm);
+	}
+
+	if (sgsn->cfg.iu.rnc_loss_pdp == SGSN_RNC_LOSS_PDP_DELETE_GN)
+		sgsn_mm_ctx_delete_all_pdp_gn(mm);
+}
+
+void sgsn_rnc_handle_ps_loss(struct ranap_iu_rnc *rnc)
+{
+	struct ranap_ue_conn_ctx *ue;
+	struct sgsn_mm_ctx *mm, *mm2;
+
+	if (!rnc)
+		return;
+
+	LOG_RNC(rnc, LOGL_NOTICE, "RNC unreachable, releasing PS sessions for served UEs\n");
+
+	/* Connected UEs with active Iu on this RNC. */
+	llist_for_each_entry(ue, &sgsn->sccp.scu_iups->ue_conn_ctx_list, list) {
+		if (ue->rnc != rnc)
+			continue;
+		mm = sgsn_mm_ctx_by_ue_ctx(ue);
+		if (mm)
+			sgsn_mm_iu_handle_rnc_loss(mm);
+	}
+
+	/* PMM-IDLE UEs last served in this RNC's routing area(s). */
 	llist_for_each_entry_safe(mm, mm2, &sgsn->mm_list, list) {
 		if (!sgsn_mm_ctx_on_rnc(mm, rnc))
 			continue;
-		sgsn_mm_ctx_delete_all_pdp_gn(mm);
+		if (mm->iu.ue_ctx && mm->iu.ue_ctx->rnc == rnc)
+			continue;
+		sgsn_mm_iu_handle_rnc_loss(mm);
 	}
 }
 

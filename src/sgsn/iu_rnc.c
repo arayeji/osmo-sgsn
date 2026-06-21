@@ -206,7 +206,7 @@ void iu_rnc_update_rai_seen(struct ranap_iu_rnc *rnc, const struct osmo_routing_
 
 void iu_rnc_discard_all_ue_ctx(struct ranap_iu_rnc *rnc)
 {
-	sgsn_rnc_drop_all_pdp_gn(rnc);
+	sgsn_rnc_handle_ps_loss(rnc);
 
 	struct ranap_ue_conn_ctx *ue_ctx, *ue_ctx_tmp;
 
