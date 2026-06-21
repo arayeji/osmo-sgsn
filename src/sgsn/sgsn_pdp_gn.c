@@ -122,7 +122,7 @@ static void sgsn_mm_iu_handle_rnc_loss(struct sgsn_mm_ctx *mm)
 
 void sgsn_rnc_handle_ps_loss(struct ranap_iu_rnc *rnc)
 {
-	struct ranap_ue_conn_ctx *ue;
+	struct ranap_ue_conn_ctx *ue, *ue2;
 	struct sgsn_mm_ctx *mm, *mm2;
 
 	if (!rnc)
@@ -130,8 +130,8 @@ void sgsn_rnc_handle_ps_loss(struct ranap_iu_rnc *rnc)
 
 	LOG_RNC(rnc, LOGL_NOTICE, "RNC unreachable, releasing PS sessions for served UEs\n");
 
-	/* Connected UEs with active Iu on this RNC. */
-	llist_for_each_entry(ue, &sgsn->sccp.scu_iups->ue_conn_ctx_list, list) {
+	/* Connected UEs with active Iu on this RNC. PS_CONN_RELEASE may free ue. */
+	llist_for_each_entry_safe(ue, ue2, &sgsn->sccp.scu_iups->ue_conn_ctx_list, list) {
 		if (ue->rnc != rnc)
 			continue;
 		mm = sgsn_mm_ctx_by_ue_ctx(ue);
