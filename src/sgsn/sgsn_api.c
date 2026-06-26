@@ -3,10 +3,12 @@
 #include <stdarg.h>
 #include <strings.h>
 #include <unistd.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #include <sys/socket.h>
 
 #include <osmocom/core/select.h>
@@ -15,6 +17,9 @@
 #include <osmocom/core/logging.h>
 #include <osmocom/core/linuxlist.h>
 #include <osmocom/core/utils.h>
+#include <osmocom/core/rate_ctr.h>
+#include <osmocom/core/stat_item.h>
+#include <osmocom/gtp/gsn.h>
 #include <osmocom/gtp/pdp.h>
 #include <osmocom/gsm/apn.h>
 #include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
@@ -30,7 +35,9 @@
 #include <osmocom/gsupclient/gsup_client.h>
 #if BUILD_IU
 #include <osmocom/sgsn/iu_rnc.h>
+#include <osmocom/sgsn/iu_rnc_fsm.h>
 #include <osmocom/sigtran/sccp_helpers.h>
+#include <osmocom/sigtran/osmo_ss7.h>
 #endif
 
 #define API_CONN_BUF_SIZE (64 * 1024)
@@ -125,6 +132,238 @@ static char *json_append(char *cur, char *start, size_t *space, const char *fmt,
 	cur += rc;
 	*space -= rc;
 	return cur;
+}
+
+static uint64_t api_ctr_current(const struct rate_ctr_group *grp, const char *name)
+{
+	const struct rate_ctr *ctr;
+
+	if (!grp || !name)
+		return 0;
+	ctr = rate_ctr_get_by_name(grp, name);
+	return ctr ? ctr->current : 0;
+}
+
+static unsigned api_gtp_queue_backlog(const struct gsn_t *gsn)
+{
+	int diff;
+
+	if (!gsn)
+		return 0;
+	diff = gsn->seq_last - gsn->seq_first;
+	if (diff < 0)
+		diff += 65536;
+	return (unsigned)diff;
+}
+
+static void api_timestamp_iso8601(char *buf, size_t buflen)
+{
+	time_t now = time(NULL);
+	struct tm tm;
+
+	buf[0] = '\0';
+	if (!buflen)
+		return;
+	if (!gmtime_r(&now, &tm))
+		return;
+	strftime(buf, buflen, "%Y-%m-%dT%H:%M:%SZ", &tm);
+}
+
+static char *build_stats_json(void)
+{
+	char *start, *cur, *esc;
+	size_t space;
+	unsigned mm_count, pdp_count;
+	uint64_t gtp_queue_full = 0;
+	uint64_t gsn_seq = 0, gsn_pdp_lookup = 0, gsn_unsup = 0, gsn_sendto = 0;
+	unsigned gtp_backlog = 0;
+	uint64_t attach_req = 0, attach_acc = 0, attach_rej = 0, pdp_act = 0;
+	struct sgsn_mm_ctx *mm;
+	struct sgsn_ggsn_ctx *ggsn;
+	bool first;
+	char ts[32];
+#if BUILD_IU
+	unsigned asp_up = 0;
+	uint64_t msu_rx = 0, msu_tx = 0, msu_disc = 0;
+	struct ranap_iu_rnc *rnc;
+	struct osmo_ss7_instance *ss7;
+	struct osmo_ss7_asp *asp;
+	int32_t iu_active = 0, iu_total = 0;
+#endif
+
+	start = talloc_zero_size(g_api_ctx, 64 * 1024);
+	if (!start)
+		return NULL;
+	cur = start;
+	space = 64 * 1024;
+	esc = talloc_size(g_api_ctx, 512);
+	if (!esc)
+		return NULL;
+
+	mm_count = llist_count(&sgsn->mm_list);
+	pdp_count = llist_count(&sgsn->pdp_list);
+
+	if (sgsn->gsn) {
+		gtp_backlog = api_gtp_queue_backlog(sgsn->gsn);
+		gtp_queue_full = api_ctr_current(sgsn->gsn->ctrg, "err:queuefull");
+		gsn_seq = api_ctr_current(sgsn->gsn->ctrg, "err:seq");
+		gsn_pdp_lookup = api_ctr_current(sgsn->gsn->ctrg, "err:unknown_pdp");
+		gsn_unsup = api_ctr_current(sgsn->gsn->ctrg, "pkt:unsupported");
+		gsn_sendto = api_ctr_current(sgsn->gsn->ctrg, "err:sendto");
+	}
+
+	if (sgsn->rate_ctrs) {
+		attach_req = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_requested");
+		attach_acc = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_accepted");
+		attach_rej = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_rejected");
+	}
+
+	llist_for_each_entry(mm, &sgsn->mm_list, list)
+		pdp_act += api_ctr_current(mm->ctrg, "pdp_ctx_act");
+
+#if BUILD_IU
+	if (sgsn->statg) {
+		const struct osmo_stat_item *it;
+
+		it = osmo_stat_item_group_get_item(sgsn->statg, SGSN_STAT_IU_PEERS_ACTIVE);
+		if (it)
+			iu_active = osmo_stat_item_get_last(it);
+		it = osmo_stat_item_group_get_item(sgsn->statg, SGSN_STAT_IU_PEERS_TOTAL);
+		if (it)
+			iu_total = osmo_stat_item_get_last(it);
+	}
+
+	ss7 = osmo_ss7_instance_find(sgsn->cfg.iu.cs7_instance);
+	if (ss7) {
+		llist_for_each_entry(asp, &ss7->asp_list, list) {
+			uint64_t rx = api_ctr_current(asp->ctrg, "rx:msu:total");
+			uint64_t tx = api_ctr_current(asp->ctrg, "tx:msu:total");
+
+			msu_rx += rx;
+			msu_tx += tx;
+			msu_disc += api_ctr_current(asp->ctrg, "rx:packets:unknown");
+			if (osmo_ss7_asp_active(asp))
+				asp_up++;
+		}
+	}
+#endif
+
+	api_timestamp_iso8601(ts, sizeof(ts));
+	cur = json_append(cur, start, &space, "{\"timestamp\":\"%s\",", ts);
+	cur = json_append(cur, start, &space, "\"mm_contexts\":%u,", mm_count);
+	cur = json_append(cur, start, &space, "\"pdp_contexts\":%u,", pdp_count);
+	cur = json_append(cur, start, &space, "\"gtp_queue_backlog_packets\":%u,", gtp_backlog);
+	cur = json_append(cur, start, &space, "\"gtp_queue_full_total\":%" PRIu64 ",",
+			  gtp_queue_full);
+
+#if BUILD_IU
+	cur = json_append(cur, start, &space,
+			  "\"iu\":{\"active_peers\":%d,\"total_peers_seen\":%d},",
+			  iu_active, iu_total);
+#else
+	cur = json_append(cur, start, &space,
+			  "\"iu\":{\"active_peers\":0,\"total_peers_seen\":0},");
+#endif
+
+	cur = json_append(cur, start, &space, "\"network\":{");
+	if (sgsn->gsn) {
+		cur = json_append(cur, start, &space, "\"gtp\":{");
+		json_escape(inet_ntoa(sgsn->gsn->gsnc), esc, 512);
+		cur = json_append(cur, start, &space, "\"signalling_ip\":\"%s\",", esc);
+		json_escape(inet_ntoa(sgsn->gsn->gsnu), esc, 512);
+		cur = json_append(cur, start, &space, "\"user_ip\":\"%s\"},", esc);
+	} else {
+		cur = json_append(cur, start, &space, "\"gtp\":null,");
+	}
+
+	if (sgsn->gsup_client) {
+		cur = json_append(cur, start, &space, "\"gsup\":{");
+		cur = json_append(cur, start, &space, "\"connected\":%s},",
+				  osmo_gsup_client_is_connected(sgsn->gsup_client) ? "true" : "false");
+	} else if (sgsn->cfg.gsup_server_addr.sin_addr.s_addr) {
+		cur = json_append(cur, start, &space, "\"gsup\":{\"connected\":false},");
+	} else {
+		cur = json_append(cur, start, &space, "\"gsup\":null,");
+	}
+
+	cur = json_append(cur, start, &space, "\"ggsn\":[");
+	first = true;
+	llist_for_each_entry(ggsn, &sgsn->ggsn_list, list) {
+		if (ggsn->id == UINT32_MAX)
+			continue;
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		json_escape(inet_ntoa(ggsn->remote_addr), esc, 512);
+		cur = json_append(cur, start, &space,
+				  "{\"id\":%u,\"remote_ip\":\"%s\",\"pdp_count\":%u}",
+				  ggsn->id, esc, llist_count(&ggsn->pdp_list));
+	}
+	cur = json_append(cur, start, &space, "],");
+
+#if BUILD_IU
+	cur = json_append(cur, start, &space, "\"iu_rnc\":[");
+	first = true;
+	llist_for_each_entry(rnc, &sgsn->rnc_list, entry) {
+		const char *addr_dump;
+		bool connected = rnc->fi && rnc->fi->state == IU_RNC_ST_READY;
+
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		json_escape(osmo_rnc_id_name(&rnc->rnc_id), esc, 512);
+		cur = json_append(cur, start, &space, "{\"name\":\"%s\",", esc);
+		addr_dump = osmo_sccp_addr_dump(&rnc->sccp_addr);
+		json_escape(addr_dump ? addr_dump : "", esc, 512);
+		cur = json_append(cur, start, &space,
+				  "\"remote_ip\":\"%s\",\"connected\":%s}",
+				  esc, connected ? "true" : "false");
+	}
+	cur = json_append(cur, start, &space, "]},");
+
+	cur = json_append(cur, start, &space,
+			  "\"sigtran\":{\"asp_up\":%u,\"msu_discarded\":%" PRIu64
+			  ",\"msu_rx\":%" PRIu64 ",\"msu_tx\":%" PRIu64 ",\"asps\":[",
+			  asp_up, msu_disc, msu_rx, msu_tx);
+	first = true;
+	if (ss7) {
+		llist_for_each_entry(asp, &ss7->asp_list, list) {
+			if (!first)
+				cur = json_append(cur, start, &space, ",");
+			first = false;
+			json_escape(asp->cfg.name ? asp->cfg.name : "", esc, 512);
+			cur = json_append(cur, start, &space, "{\"name\":\"%s\",", esc);
+			cur = json_append(cur, start, &space,
+					  "\"rx_packets\":%" PRIu64 ",\"tx_packets\":%" PRIu64 ",",
+					  api_ctr_current(asp->ctrg, "rx:msu:total"),
+					  api_ctr_current(asp->ctrg, "tx:msu:total"));
+			cur = json_append(cur, start, &space, "\"up\":%s}",
+					  osmo_ss7_asp_active(asp) ? "true" : "false");
+		}
+	}
+	cur = json_append(cur, start, &space, "]},");
+#else
+	cur = json_append(cur, start, &space, "\"iu_rnc\":[]},");
+	cur = json_append(cur, start, &space,
+			  "\"sigtran\":{\"asp_up\":0,\"msu_discarded\":0,\"msu_rx\":0,\"msu_tx\":0,\"asps\":[]},");
+#endif
+
+	cur = json_append(cur, start, &space,
+			  "\"gsn\":{\"errors\":{\"queue_full\":%" PRIu64
+			  ",\"sequence_out_of_range\":%" PRIu64
+			  ",\"pdp_lookup_failed\":%" PRIu64
+			  ",\"unsupported_gtp_version\":%" PRIu64
+			  ",\"sendto_errors\":%" PRIu64 "}},",
+			  gtp_queue_full, gsn_seq, gsn_pdp_lookup, gsn_unsup, gsn_sendto);
+	cur = json_append(cur, start, &space,
+			  "\"gmm\":{\"attach_requests\":%" PRIu64
+			  ",\"attach_accepts\":%" PRIu64
+			  ",\"attach_rejects\":%" PRIu64
+			  ",\"pdp_activations\":%" PRIu64 "}}",
+			  attach_req, attach_acc, attach_rej, pdp_act);
+
+	talloc_free(esc);
+	return start;
 }
 
 static char *build_mm_json(const struct sgsn_mm_ctx *mm, bool include_pdp)
@@ -306,6 +545,8 @@ static char *build_links_json(void)
 	cur = json_append(cur, start, &space, "{\"api\":[");
 	cur = json_append(cur, start, &space,
 			  "{\"method\":\"GET\",\"path\":\"/health\",\"auth\":false,\"description\":\"Health check\"},");
+	cur = json_append(cur, start, &space,
+			  "{\"method\":\"GET\",\"path\":\"/v1/stats\",\"auth\":true,\"description\":\"Operational stats snapshot\"},");
 	cur = json_append(cur, start, &space,
 			  "{\"method\":\"GET\",\"path\":\"/v1/links\",\"auth\":true,\"description\":\"API and network links\"},");
 	cur = json_append(cur, start, &space,
@@ -776,6 +1017,10 @@ static void handle_request(struct api_conn *ac, const char *req)
 
 	if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/counts")) {
 		body = build_counts_json();
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+			 "application/json", body ? body : "{\"error\":\"oom\"}");
+	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/stats")) {
+		body = build_stats_json();
 		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 			 "application/json", body ? body : "{\"error\":\"oom\"}");
 	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/links")) {
