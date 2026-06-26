@@ -169,6 +169,64 @@ static void api_timestamp_iso8601(char *buf, size_t buflen)
 	strftime(buf, buflen, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 
+#if BUILD_IU
+struct api_sigtran_ctx {
+	char *asps;
+	size_t asps_space;
+	char *esc;
+	struct osmo_ss7_instance *ss7;
+	unsigned asp_up;
+	uint64_t msu_rx;
+	uint64_t msu_tx;
+	uint64_t msu_disc;
+	bool first_asp;
+};
+
+static int api_sigtran_group_cb(struct rate_ctr_group *grp, void *_ctx)
+{
+	struct api_sigtran_ctx *ctx = _ctx;
+	struct osmo_ss7_asp *asp;
+	uint64_t rx, tx, disc;
+	char *asps_cur;
+	size_t asps_space;
+
+	if (!ctx || !ctx->ss7 || !grp || !grp->name || !grp->name[0])
+		return 0;
+
+	asp = osmo_ss7_asp_find_by_name(ctx->ss7, grp->name);
+	if (!asp)
+		return 0;
+
+	rx = api_ctr_current(grp, "rx:msu:total");
+	tx = api_ctr_current(grp, "tx:msu:total");
+	disc = api_ctr_current(grp, "rx:packets:unknown");
+	ctx->msu_rx += rx;
+	ctx->msu_tx += tx;
+	ctx->msu_disc += disc;
+	if (osmo_ss7_asp_active(asp))
+		ctx->asp_up++;
+
+	if (!ctx->asps)
+		return 0;
+
+	asps_cur = ctx->asps;
+	asps_space = ctx->asps_space;
+	if (!ctx->first_asp)
+		asps_cur = json_append(asps_cur, ctx->asps, &asps_space, ",");
+	ctx->first_asp = false;
+
+	json_escape(grp->name, ctx->esc, 512);
+	asps_cur = json_append(asps_cur, ctx->asps, &asps_space, "{\"name\":\"%s\",", ctx->esc);
+	asps_cur = json_append(asps_cur, ctx->asps, &asps_space,
+			       "\"rx_packets\":%" PRIu64 ",\"tx_packets\":%" PRIu64 ",",
+			       rx, tx);
+	asps_cur = json_append(asps_cur, ctx->asps, &asps_space, "\"up\":%s}",
+			       osmo_ss7_asp_active(asp) ? "true" : "false");
+	ctx->asps_space = asps_space;
+	return 0;
+}
+#endif
+
 static char *build_stats_json(void)
 {
 	char *start, *cur, *esc;
@@ -187,8 +245,8 @@ static char *build_stats_json(void)
 	uint64_t msu_rx = 0, msu_tx = 0, msu_disc = 0;
 	struct ranap_iu_rnc *rnc;
 	struct osmo_ss7_instance *ss7;
-	struct osmo_ss7_asp *asp;
 	int32_t iu_active = 0, iu_total = 0;
+	char *asps_json = NULL;
 #endif
 
 	start = talloc_zero_size(g_api_ctx, 64 * 1024);
@@ -234,18 +292,6 @@ static char *build_stats_json(void)
 	}
 
 	ss7 = osmo_ss7_instance_find(sgsn->cfg.iu.cs7_instance);
-	if (ss7) {
-		llist_for_each_entry(asp, &ss7->asp_list, list) {
-			uint64_t rx = api_ctr_current(asp->ctrg, "rx:msu:total");
-			uint64_t tx = api_ctr_current(asp->ctrg, "tx:msu:total");
-
-			msu_rx += rx;
-			msu_tx += tx;
-			msu_disc += api_ctr_current(asp->ctrg, "rx:packets:unknown");
-			if (osmo_ss7_asp_active(asp))
-				asp_up++;
-		}
-	}
 #endif
 
 	api_timestamp_iso8601(ts, sizeof(ts));
@@ -320,28 +366,35 @@ static char *build_stats_json(void)
 				  esc, connected ? "true" : "false");
 	}
 	cur = json_append(cur, start, &space, "]},");
+	{
+		struct api_sigtran_ctx stx = {
+			.asps = talloc_zero_size(g_api_ctx, 4096),
+			.asps_space = 4096,
+			.esc = esc,
+			.ss7 = ss7,
+			.asp_up = 0,
+			.msu_rx = 0,
+			.msu_tx = 0,
+			.msu_disc = 0,
+			.first_asp = true,
+		};
 
+		if (stx.asps)
+			rate_ctr_for_each_group(api_sigtran_group_cb, &stx);
+		asp_up = stx.asp_up;
+		msu_rx = stx.msu_rx;
+		msu_tx = stx.msu_tx;
+		msu_disc = stx.msu_disc;
+		asps_json = stx.asps;
+	}
 	cur = json_append(cur, start, &space,
 			  "\"sigtran\":{\"asp_up\":%u,\"msu_discarded\":%" PRIu64
 			  ",\"msu_rx\":%" PRIu64 ",\"msu_tx\":%" PRIu64 ",\"asps\":[",
 			  asp_up, msu_disc, msu_rx, msu_tx);
-	first = true;
-	if (ss7) {
-		llist_for_each_entry(asp, &ss7->asp_list, list) {
-			if (!first)
-				cur = json_append(cur, start, &space, ",");
-			first = false;
-			json_escape(asp->cfg.name ? asp->cfg.name : "", esc, 512);
-			cur = json_append(cur, start, &space, "{\"name\":\"%s\",", esc);
-			cur = json_append(cur, start, &space,
-					  "\"rx_packets\":%" PRIu64 ",\"tx_packets\":%" PRIu64 ",",
-					  api_ctr_current(asp->ctrg, "rx:msu:total"),
-					  api_ctr_current(asp->ctrg, "tx:msu:total"));
-			cur = json_append(cur, start, &space, "\"up\":%s}",
-					  osmo_ss7_asp_active(asp) ? "true" : "false");
-		}
-	}
+	if (asps_json && asps_json[0])
+		cur = json_append(cur, start, &space, "%s", asps_json);
 	cur = json_append(cur, start, &space, "]},");
+	talloc_free(asps_json);
 #else
 	cur = json_append(cur, start, &space, "\"iu_rnc\":[]},");
 	cur = json_append(cur, start, &space,
