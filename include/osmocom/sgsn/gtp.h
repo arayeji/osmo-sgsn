@@ -14,6 +14,7 @@ struct sgsn_mm_ctx;
 struct sgsn_mme_ctx;
 
 int sgsn_gtp_init(struct sgsn_instance *sgi);
+int sgsn_gtp_ctx_init(struct sgsn_instance *sgi);
 
 int sgsn_mme_ran_info_req(struct sgsn_mme_ctx *mme, const struct bssgp_ran_information_pdu *pdu);
 

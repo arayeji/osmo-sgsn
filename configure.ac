@@ -45,7 +45,7 @@ PKG_CHECK_MODULES(LIBOSMOGSM, libosmogsm >= 1.10.0)
 PKG_CHECK_MODULES(LIBOSMOGB, libosmogb >= 1.10.0)
 PKG_CHECK_MODULES(LIBOSMOABIS, libosmoabis >= 1.6.0)
 PKG_CHECK_MODULES(LIBOSMOGSUPCLIENT, libosmo-gsup-client >= 1.8.0)
-PKG_CHECK_MODULES(LIBGTP, libgtp >= 1.12.0)
+PKG_CHECK_MODULES(LIBGTP, libgtp >= 1.14.0)
 
 # Enable/disable 3G aka IuPS + IuCS support?
 AC_ARG_ENABLE([iu], [AS_HELP_STRING([--enable-iu], [Build 3G support, aka IuPS and IuCS interfaces])],

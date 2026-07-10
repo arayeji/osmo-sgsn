@@ -62,6 +62,7 @@
 #include <osmocom/sgsn/gprs_mm_state_gb_fsm.h>
 #include <osmocom/sgsn/gprs_mm_state_iu_fsm.h>
 #include <osmocom/sgsn/gtp_ggsn.h>
+#include <osmocom/sgsn/gtp.h>
 #include <osmocom/sgsn/gtp_mme.h>
 #include <osmocom/sgsn/sgsn_rim.h>
 #include <osmocom/sgsn/gprs_bssgp.h>
@@ -1116,6 +1117,10 @@ int sgsn_gtp_init(struct sgsn_instance *sgi)
 	gtp_set_cb_unsup_ind(gsn, cb_unsup_ind);
 	gtp_set_cb_extheader_ind(gsn, cb_extheader_ind);
 	gtp_set_cb_ran_info_relay_ind(gsn, cb_gtp_ran_info_relay_ind);
+
+	rc = sgsn_gtp_ctx_init(sgi);
+	if (rc < 0)
+		LOGP(DGPRS, LOGL_ERROR, "Failed to init SGSN Context GTP handling: %d\n", rc);
 
 	return 0;
 }
