@@ -121,11 +121,10 @@ const struct value_string gtp_cause_strs[] = {
 
 static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size_t len)
 {
-	union gtpie_member ie_mem[GTPIE_SIZE];
-	union gtpie_member *ie[GTPIE_SIZE];
+	union gtpie_member *ie[GTPIE_SIZE] = { NULL };
 	uint64_t imsi64 = 0;
 	const char *imsi_str;
-	unsigned int i, payload_off;
+	unsigned int payload_off;
 	const char *proto;
 	struct gtp1_header_short *gh1;
 
@@ -151,13 +150,10 @@ static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size
 	if (len <= payload_off)
 		return;
 
-	for (i = 0; i < GTPIE_SIZE; i++)
-		ie[i] = &ie_mem[i];
-
 	if (gtpie_decaps(ie, version, data + payload_off, len - payload_off) < 0)
 		return;
 
-	if (gtpie_gettv0(ie, GTPIE_IMSI, 0, &imsi64, sizeof(imsi64)) != 0)
+	if (gtpie_gettv8(ie, GTPIE_IMSI, 0, &imsi64) != 0)
 		return;
 
 	imsi_str = imsi_gtp2str(&imsi64);
