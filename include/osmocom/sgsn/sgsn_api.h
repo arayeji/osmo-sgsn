@@ -15,3 +15,11 @@ struct sgsn_api_config {
 
 int sgsn_api_init(struct sgsn_instance *inst);
 void sgsn_api_shutdown(void);
+
+struct sgsn_mm_ctx;
+
+bool sgsn_api_trace_active(const char *imsi);
+void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
+			   const uint8_t *data, size_t len);
+void sgsn_api_trace_packet_mm(const struct sgsn_mm_ctx *mm, const char *proto,
+			      bool tx, const uint8_t *data, size_t len);

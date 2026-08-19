@@ -52,6 +52,7 @@
 #include <osmocom/sgsn/gprs_llc.h>
 #include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/gprs_gmm.h>
+#include <osmocom/sgsn/sgsn_api.h>
 #include <osmocom/sgsn/gprs_utils.h>
 #include <osmocom/sgsn/gprs_subscriber.h>
 #include <osmocom/sgsn/sgsn.h>
@@ -119,6 +120,9 @@ time_t gprs_max_time_to_idle(void)
 int gsm48_gmm_sendmsg(struct msgb *msg, int command,
 			     struct sgsn_mm_ctx *mm, bool encryptable)
 {
+	if (mm && mm->imsi[0])
+		sgsn_api_trace_packet_mm(mm, "nas", true, msg->data, msg->len);
+
 	if (mm) {
 		rate_ctr_inc(rate_ctr_group_get_ctr(mm->ctrg, GMM_CTR_PKTS_SIG_OUT));
 #ifdef BUILD_IU
@@ -2356,6 +2360,9 @@ int gsm0408_gprs_rcvmsg_gb(struct msgb *msg, struct gprs_llc_llme *llme,
 		rate_ctr_inc(rate_ctr_group_get_ctr(mmctx->ctrg, GMM_CTR_PKTS_SIG_IN));
 		mmctx->gb.llme = llme;
 		gprs_gb_recv_pdu(mmctx, msg);
+		if (mmctx->imsi[0])
+			sgsn_api_trace_packet_mm(mmctx, "nas", false,
+						 msgb_l3(msg), msgb_l3len(msg));
 	}
 
 	/* MMCTX can be NULL */
@@ -2395,6 +2402,9 @@ int gsm0408_gprs_rcvmsg_iu(struct msgb *msg, struct gprs_ra_id *ra_id,
 		rate_ctr_inc(rate_ctr_group_get_ctr(mmctx->ctrg, GMM_CTR_PKTS_SIG_IN));
 		if (ra_id)
 			memcpy(&mmctx->ra, ra_id, sizeof(mmctx->ra));
+		if (mmctx->imsi[0])
+			sgsn_api_trace_packet_mm(mmctx, "nas", false,
+						 msgb_l3(msg), msgb_l3len(msg));
 	}
 
 	/* MMCTX can be NULL */

@@ -19,6 +19,7 @@
 #include <osmocom/core/utils.h>
 #include <osmocom/core/rate_ctr.h>
 #include <osmocom/core/stat_item.h>
+#include <osmocom/core/base64.h>
 #include <osmocom/gtp/gsn.h>
 #include <osmocom/gtp/pdp.h>
 #include <osmocom/gsm/apn.h>
@@ -41,6 +42,7 @@
 #endif
 
 #define API_CONN_BUF_SIZE (64 * 1024)
+#define SGSN_API_TRACE_PKT_MAX 4096
 
 struct api_conn {
 	struct osmo_fd ofd;
@@ -927,6 +929,59 @@ static int api_trace_disable(const char *imsi)
 	LOGP(DGPRS, LOGL_NOTICE, "API disabled IMSI debug trace for %s\n", imsi);
 	talloc_free(t);
 	return 0;
+}
+
+bool sgsn_api_trace_active(const char *imsi)
+{
+	if (!imsi || !imsi[0])
+		return false;
+	return api_trace_find(imsi) != NULL;
+}
+
+void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
+			   const uint8_t *data, size_t len)
+{
+	size_t cap_len, b64_len, olen;
+	bool truncated = false;
+	unsigned char *b64;
+	char line[32 + 16 + 8 + 16 + SGSN_API_TRACE_PKT_MAX * 4 / 3 + 64];
+
+	if (!imsi || !imsi[0] || !proto || !data || !len)
+		return;
+	if (!sgsn_api_trace_active(imsi))
+		return;
+
+	cap_len = len;
+	if (cap_len > SGSN_API_TRACE_PKT_MAX) {
+		cap_len = SGSN_API_TRACE_PKT_MAX;
+		truncated = true;
+	}
+
+	b64_len = ((cap_len + 2) / 3) * 4 + 1;
+	b64 = talloc_size(g_api_ctx, b64_len);
+	if (!b64)
+		return;
+
+	if (osmo_base64_encode(b64, b64_len, &olen, data, cap_len) < 0) {
+		talloc_free(b64);
+		return;
+	}
+
+	snprintf(line, sizeof(line),
+		 "[IMSI:%s] PACKET: proto=%s dir=%s len=%zu%s b64=%s\n",
+		 imsi, proto, tx ? "tx" : "rx", cap_len,
+		 truncated ? " trunc=1" : "", b64);
+	fputs(line, stderr);
+	fflush(stderr);
+	talloc_free(b64);
+}
+
+void sgsn_api_trace_packet_mm(const struct sgsn_mm_ctx *mm, const char *proto,
+			      bool tx, const uint8_t *data, size_t len)
+{
+	if (!mm || !mm->imsi[0])
+		return;
+	sgsn_api_trace_packet(mm->imsi, proto, tx, data, len);
 }
 
 static char *build_trace_json(const struct sgsn_api_trace *t, const char *status)

@@ -67,6 +67,9 @@
 #include <osmocom/sgsn/sgsn_rim.h>
 #include <osmocom/sgsn/gprs_bssgp.h>
 #include <osmocom/sgsn/pdpctx.h>
+#include <osmocom/sgsn/sgsn_api.h>
+#include <osmocom/gtp/gtp.h>
+#include <osmocom/gtp/gtpie.h>
 
 /* TS 23.003: The MSISDN shall take the dummy MSISDN value composed of
  * 15 digits set to 0 (encoded as an E.164 international number) when
@@ -115,6 +118,62 @@ const struct value_string gtp_cause_strs[] = {
 	{ GTPCAUSE_UNKNOWN_PDP, "Unknown PDP address or PDP type" },
 	{ 0, NULL }
 };
+
+static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size_t len)
+{
+	union gtpie_member ie_mem[GTPIE_SIZE];
+	union gtpie_member *ie[GTPIE_SIZE];
+	uint64_t imsi64 = 0;
+	const char *imsi_str;
+	unsigned int i, payload_off;
+	const char *proto;
+	struct gtp1_header_short *gh1;
+
+	if (!data || !len)
+		return;
+
+	if (version == 1) {
+		if (len < GTP1_HEADER_SIZE_SHORT)
+			return;
+		gh1 = (struct gtp1_header_short *)data;
+		payload_off = (gh1->flags & GTP1HDR_F_SEQ) ?
+			GTP1_HEADER_SIZE_LONG : GTP1_HEADER_SIZE_SHORT;
+		proto = "gtp1c";
+	} else if (version == 0) {
+		if (len < GTP0_HEADER_SIZE)
+			return;
+		payload_off = GTP0_HEADER_SIZE;
+		proto = "gtp0";
+	} else {
+		return;
+	}
+
+	if (len <= payload_off)
+		return;
+
+	for (i = 0; i < GTPIE_SIZE; i++)
+		ie[i] = &ie_mem[i];
+
+	if (gtpie_decaps(ie, version, data + payload_off, len - payload_off) < 0)
+		return;
+
+	if (gtpie_gettv0(ie, GTPIE_IMSI, 0, &imsi64, sizeof(imsi64)) != 0)
+		return;
+
+	imsi_str = imsi_gtp2str(&imsi64);
+	if (!imsi_str || !imsi_str[0])
+		return;
+
+	sgsn_api_trace_packet(imsi_str, proto, tx, data, len);
+}
+
+static void cb_gtp_packet_trace(struct gsn_t *gsn, void *cbp, bool tx,
+				const uint8_t *data, size_t len, uint8_t version)
+{
+	(void)gsn;
+	(void)cbp;
+	trace_gtp_packet(version, tx, data, len);
+}
 
 /* Generate the GTP IMSI IE according to 09.60 Section 7.9.2 */
 static uint64_t imsi_str2gtp(char *str)
@@ -1117,6 +1176,7 @@ int sgsn_gtp_init(struct sgsn_instance *sgi)
 	gtp_set_cb_unsup_ind(gsn, cb_unsup_ind);
 	gtp_set_cb_extheader_ind(gsn, cb_extheader_ind);
 	gtp_set_cb_ran_info_relay_ind(gsn, cb_gtp_ran_info_relay_ind);
+	gtp_set_cb_packet_trace(gsn, cb_gtp_packet_trace);
 
 	rc = sgsn_gtp_ctx_init(sgi);
 	if (rc < 0)
