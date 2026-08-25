@@ -3,6 +3,7 @@
 
 #include "config.h"
 
+#include <osmocom/core/hashtable.h>
 #include <osmocom/core/msgb.h>
 #include <osmocom/core/select.h>
 #include <osmocom/core/stat_item.h>
@@ -182,6 +183,11 @@ struct sgsn_instance {
 	struct llist_head ggsn_list; /* list of struct sgsn_ggsn_ctx */
 	struct llist_head mme_list; /* list of struct sgsn_mme_ctx */
 	struct llist_head mm_list; /* list of struct sgsn_mm_ctx */
+	DECLARE_HASHTABLE(mm_by_imsi, 10);
+	DECLARE_HASHTABLE(mm_by_ptmsi, 10);
+	DECLARE_HASHTABLE(mm_by_ptmsi_old, 10);
+	DECLARE_HASHTABLE(mm_by_tlli, 10);
+	DECLARE_HASHTABLE(mm_by_tlli_new, 10);
 	struct llist_head pdp_list; /* list of struct sgsn_pdp_ctx */
 #if BUILD_IU
 	struct llist_head rnc_list; /* list of struct ranap_iu_rnc */

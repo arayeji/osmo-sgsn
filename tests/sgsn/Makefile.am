@@ -71,6 +71,8 @@ sgsn_test_LDADD = \
 	$(top_builddir)/src/sgsn/sgsn_ctrl.o \
 	$(top_builddir)/src/sgsn/sgsn_vty.o \
 	$(top_builddir)/src/sgsn/sgsn_libgtp.o \
+	$(top_builddir)/src/sgsn/sgsn_api.o \
+	$(top_builddir)/src/sgsn/sgsn_gtp_ctx.o \
 	$(top_builddir)/src/sgsn/sgsn_auth.o \
 	$(top_builddir)/src/sgsn/gprs_subscriber.o \
         $(top_builddir)/src/sgsn/gprs_llc_xid.o \

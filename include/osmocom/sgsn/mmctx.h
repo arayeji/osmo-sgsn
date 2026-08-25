@@ -7,6 +7,7 @@
 #include <inttypes.h>
 
 #include <osmocom/core/fsm.h>
+#include <osmocom/core/linuxlist.h>
 #include <osmocom/core/timer.h>
 
 #include <osmocom/gsm/gsm48.h>
@@ -96,6 +97,11 @@ struct ranap_ue_conn_ctx;
 /* Extended by 3GPP TS 23.060, Table 6: SGSN MM and PDP Contexts */
 struct sgsn_mm_ctx {
 	struct llist_head	list;
+	struct hlist_node	hlist_by_imsi;
+	struct hlist_node	hlist_by_ptmsi;
+	struct hlist_node	hlist_by_ptmsi_old;
+	struct hlist_node	hlist_by_tlli;
+	struct hlist_node	hlist_by_tlli_new;
 
 	enum sgsn_ran_type	ran_type;
 
@@ -273,6 +279,10 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_alloc_gb(uint32_t tlli,
 struct sgsn_mm_ctx *sgsn_mm_ctx_alloc_iu(void *uectx);
 
 void sgsn_mm_ctx_cleanup_free(struct sgsn_mm_ctx *ctx);
+
+void sgsn_mm_ctx_rehash_imsi(struct sgsn_mm_ctx *mm);
+void sgsn_mm_ctx_rehash_ptmsi(struct sgsn_mm_ctx *mm);
+void sgsn_mm_ctx_rehash_tlli(struct sgsn_mm_ctx *mm);
 
 struct sgsn_ggsn_ctx *sgsn_mm_ctx_find_ggsn_ctx(struct sgsn_mm_ctx *mmctx,
 						struct tlv_parsed *tp,

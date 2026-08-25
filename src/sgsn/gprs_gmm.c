@@ -1169,6 +1169,7 @@ static int gsm48_rx_gmm_id_resp(struct sgsn_mm_ctx *ctx, struct msgb *msg)
 			}
 		}
 		OSMO_STRLCPY_ARRAY(ctx->imsi, mi.imsi);
+		sgsn_mm_ctx_rehash_imsi(ctx);
 		break;
 	case GSM_MI_TYPE_IMEI:
 		OSMO_STRLCPY_ARRAY(ctx->imei, mi.imei);
@@ -1192,6 +1193,7 @@ static inline void ptmsi_update(struct sgsn_mm_ctx *ctx)
 		if (ptmsi != GSM_RESERVED_TMSI) {
 			ctx->p_tmsi_old = ctx->p_tmsi;
 			ctx->p_tmsi = ptmsi;
+			sgsn_mm_ctx_rehash_ptmsi(ctx);
 		} else
 			LOGMMCTXP(LOGL_ERROR, ctx, "P-TMSI allocation failure: using old one.\n");
 	}
@@ -1340,6 +1342,7 @@ static int gsm48_rx_gmm_att_req(struct sgsn_mm_ctx *ctx, struct msgb *msg,
 				goto rejected;
 			}
 			OSMO_STRLCPY_ARRAY(ctx->imsi, mi.imsi);
+			sgsn_mm_ctx_rehash_imsi(ctx);
 		}
 		break;
 	case GSM_MI_TYPE_TMSI:
@@ -1358,6 +1361,7 @@ static int gsm48_rx_gmm_att_req(struct sgsn_mm_ctx *ctx, struct msgb *msg,
 				goto rejected;
 			}
 			ctx->p_tmsi = mi.tmsi;
+			sgsn_mm_ctx_rehash_ptmsi(ctx);
 		}
 		break;
 	default:
@@ -1372,6 +1376,7 @@ static int gsm48_rx_gmm_att_req(struct sgsn_mm_ctx *ctx, struct msgb *msg,
 
 	if (ctx->ran_type == MM_CTX_T_GERAN_Gb) {
 		ctx->gb.tlli = msgb_tlli(msg);
+		sgsn_mm_ctx_rehash_tlli(ctx);
 		ctx->gb.llme = llme;
 	}
 	msgid2mmctx(ctx, msg);
@@ -1417,6 +1422,7 @@ static int gsm48_rx_gmm_att_req(struct sgsn_mm_ctx *ctx, struct msgb *msg,
 		/* Even if there is no P-TMSI allocated, the MS will
 		 * switch from foreign TLLI to local TLLI */
 		ctx->gb.tlli_new = gprs_tmsi2tlli(ctx->p_tmsi, TLLI_LOCAL);
+		sgsn_mm_ctx_rehash_tlli(ctx);
 
 		/* Inform LLC layer about new TLLI but keep old active */
 		if (sgsn_mm_ctx_is_authenticated(ctx))
@@ -1463,6 +1469,7 @@ static int gsm48_rx_gmm_att_compl(struct sgsn_mm_ctx *mmctx)
 	mmctx_timer_stop(mmctx, 3350);
 	mmctx->t3350_mode = GMM_T3350_MODE_NONE;
 	mmctx->p_tmsi_old = 0;
+	sgsn_mm_ctx_rehash_ptmsi(mmctx);
 	mmctx->pending_req = 0;
 	osmo_fsm_inst_dispatch(mmctx->gmm_fsm, E_GMM_ATTACH_SUCCESS, NULL);
 	switch(mmctx->ran_type) {
@@ -1472,6 +1479,7 @@ static int gsm48_rx_gmm_att_compl(struct sgsn_mm_ctx *mmctx)
 	case MM_CTX_T_GERAN_Gb:
 		/* Unassign the old TLLI */
 		mmctx->gb.tlli = mmctx->gb.tlli_new;
+		sgsn_mm_ctx_rehash_tlli(mmctx);
 		gprs_llme_copy_key(mmctx, mmctx->gb.llme);
 		gprs_llgmm_assign(mmctx->gb.llme, TLLI_UNASSIGNED,
 				  mmctx->gb.tlli_new);
@@ -1783,6 +1791,7 @@ static int gsm48_rx_gmm_ra_upd_req(struct sgsn_mm_ctx *mmctx, struct msgb *msg,
 		bssgp_parse_cell_id2(&mmctx->ra, NULL, msgb_bcid(msg), 8);
 		/* Update the MM context with the new (i.e. foreign) TLLI */
 		mmctx->gb.tlli = msgb_tlli(msg);
+		sgsn_mm_ctx_rehash_tlli(mmctx);
 	}
 	/* Update the MM context with the new DRX params */
 	if (TLVP_PRESENT(&req.tlv, GSM48_IE_GMM_DRX_PARAM))
@@ -1811,6 +1820,7 @@ static int gsm48_rx_gmm_ra_upd_req(struct sgsn_mm_ctx *mmctx, struct msgb *msg,
 		/* Even if there is no P-TMSI allocated, the MS will switch from
 	 	* foreign TLLI to local TLLI */
 		mmctx->gb.tlli_new = gprs_tmsi2tlli(mmctx->p_tmsi, TLLI_LOCAL);
+		sgsn_mm_ctx_rehash_tlli(mmctx);
 
 		/* Inform LLC layer about new TLLI but keep accepting the old one during Rx */
 		gprs_llgmm_assign(mmctx->gb.llme, mmctx->gb.tlli,
@@ -1859,6 +1869,7 @@ static int gsm48_rx_gmm_ra_upd_compl(struct sgsn_mm_ctx *mmctx)
 	mmctx_timer_stop(mmctx, 3350);
 	mmctx->t3350_mode = GMM_T3350_MODE_NONE;
 	mmctx->p_tmsi_old = 0;
+	sgsn_mm_ctx_rehash_ptmsi(mmctx);
 	mmctx->pending_req = 0;
 	osmo_fsm_inst_dispatch(mmctx->gmm_fsm, E_GMM_COMMON_PROC_SUCCESS, NULL);
 	switch(mmctx->ran_type) {
@@ -1868,6 +1879,7 @@ static int gsm48_rx_gmm_ra_upd_compl(struct sgsn_mm_ctx *mmctx)
 	case MM_CTX_T_GERAN_Gb:
 		/* Unassign the old TLLI */
 		mmctx->gb.tlli = mmctx->gb.tlli_new;
+		sgsn_mm_ctx_rehash_tlli(mmctx);
 		gprs_llgmm_assign(mmctx->gb.llme, TLLI_UNASSIGNED,
 				  mmctx->gb.tlli_new);
 		osmo_fsm_inst_dispatch(mmctx->gb.mm_state_fsm, E_MM_RA_UPDATE, NULL);
@@ -1888,10 +1900,12 @@ static int gsm48_rx_gmm_ptmsi_reall_compl(struct sgsn_mm_ctx *mmctx)
 	mmctx_timer_stop(mmctx, 3350);
 	mmctx->t3350_mode = GMM_T3350_MODE_NONE;
 	mmctx->p_tmsi_old = 0;
+	sgsn_mm_ctx_rehash_ptmsi(mmctx);
 	mmctx->pending_req = 0;
 	if (mmctx->ran_type == MM_CTX_T_GERAN_Gb) {
 		/* Unassign the old TLLI */
 		mmctx->gb.tlli = mmctx->gb.tlli_new;
+		sgsn_mm_ctx_rehash_tlli(mmctx);
 		//gprs_llgmm_assign(mmctx->gb.llme, TLLI_UNASSIGNED, mmctx->gb.tlli_new, GPRS_ALGO_GEA0, NULL);
 	}
 	return 0;

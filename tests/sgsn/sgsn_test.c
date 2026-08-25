@@ -1466,6 +1466,7 @@ static void test_ggsn_selection(void)
 	OSMO_ASSERT(count(gprs_llme_list()) == 0);
 	ctx = alloc_mm_ctx(local_tlli, &raid);
 	osmo_strlcpy(ctx->imsi, imsi1, sizeof(ctx->imsi));
+	sgsn_mm_ctx_rehash_imsi(ctx);
 
 	/* Allocate and attach a subscriber */
 	s1 = gprs_subscr_get_or_create_by_mmctx(ctx);

@@ -210,6 +210,11 @@ struct sgsn_instance *sgsn_instance_alloc(void *talloc_ctx)
 	INIT_LLIST_HEAD(&inst->ggsn_list);
 	INIT_LLIST_HEAD(&inst->mme_list);
 	INIT_LLIST_HEAD(&inst->mm_list);
+	hash_init(inst->mm_by_imsi);
+	hash_init(inst->mm_by_ptmsi);
+	hash_init(inst->mm_by_ptmsi_old);
+	hash_init(inst->mm_by_tlli);
+	hash_init(inst->mm_by_tlli_new);
 	INIT_LLIST_HEAD(&inst->pdp_list);
 #if BUILD_IU
 	INIT_LLIST_HEAD(&inst->rnc_list);

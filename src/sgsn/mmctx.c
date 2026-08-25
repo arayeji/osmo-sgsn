@@ -22,8 +22,11 @@
 #include "config.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #include <osmocom/core/linuxlist.h>
+#include <osmocom/core/hashtable.h>
+#include <osmocom/core/jhash.h>
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/timer.h>
 #include <osmocom/core/rate_ctr.h>
@@ -72,6 +75,63 @@ const struct value_string sgsn_ran_type_names[] = {
 #endif
 	{ 0, NULL }
 };
+
+static uint32_t sgsn_imsi_hashkey(const char *imsi)
+{
+	return osmo_jhash(imsi, strlen(imsi), 0);
+}
+
+void sgsn_mm_ctx_rehash_imsi(struct sgsn_mm_ctx *mm)
+{
+	hash_del(&mm->hlist_by_imsi);
+	if (mm->imsi[0])
+		hash_add(sgsn->mm_by_imsi, &mm->hlist_by_imsi,
+			 sgsn_imsi_hashkey(mm->imsi));
+}
+
+void sgsn_mm_ctx_rehash_ptmsi(struct sgsn_mm_ctx *mm)
+{
+	hash_del(&mm->hlist_by_ptmsi);
+	if (mm->p_tmsi != 0 && mm->p_tmsi != GSM_RESERVED_TMSI)
+		hash_add(sgsn->mm_by_ptmsi, &mm->hlist_by_ptmsi, mm->p_tmsi);
+
+	hash_del(&mm->hlist_by_ptmsi_old);
+	if (mm->p_tmsi_old)
+		hash_add(sgsn->mm_by_ptmsi_old, &mm->hlist_by_ptmsi_old,
+			 mm->p_tmsi_old);
+}
+
+void sgsn_mm_ctx_rehash_tlli(struct sgsn_mm_ctx *mm)
+{
+	hash_del(&mm->hlist_by_tlli);
+	if (mm->gb.tlli != TLLI_UNASSIGNED)
+		hash_add(sgsn->mm_by_tlli, &mm->hlist_by_tlli, mm->gb.tlli);
+
+	hash_del(&mm->hlist_by_tlli_new);
+	if (mm->gb.tlli_new != 0 && mm->gb.tlli_new != TLLI_UNASSIGNED)
+		hash_add(sgsn->mm_by_tlli_new, &mm->hlist_by_tlli_new,
+			 mm->gb.tlli_new);
+}
+
+static struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli_hash(uint32_t tlli,
+					const struct osmo_routing_area_id *raid)
+{
+	struct sgsn_mm_ctx *ctx;
+
+	hash_for_each_possible(sgsn->mm_by_tlli, ctx, hlist_by_tlli, tlli) {
+		if (!osmo_rai_cmp(raid, &ctx->ra) &&
+		    (tlli == ctx->gb.tlli || tlli == ctx->gb.tlli_new))
+			return ctx;
+	}
+
+	hash_for_each_possible(sgsn->mm_by_tlli_new, ctx, hlist_by_tlli_new, tlli) {
+		if (!osmo_rai_cmp(raid, &ctx->ra) &&
+		    (tlli == ctx->gb.tlli || tlli == ctx->gb.tlli_new))
+			return ctx;
+	}
+
+	return NULL;
+}
 
 static const struct rate_ctr_desc mmctx_ctr_description[] = {
 	{ "sign:packets:in",	"Signalling Messages ( In)" },
@@ -128,15 +188,7 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_by_llme(const struct gprs_llc_llme *llme)
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli(uint32_t tlli,
 					const struct osmo_routing_area_id *raid)
 {
-	struct sgsn_mm_ctx *ctx;
-
-	llist_for_each_entry(ctx, &sgsn->mm_list, list) {
-		if ((tlli == ctx->gb.tlli || tlli == ctx->gb.tlli_new) &&
-		    !osmo_rai_cmp(raid, &ctx->ra))
-			return ctx;
-	}
-
-	return NULL;
+	return sgsn_mm_ctx_by_tlli_hash(tlli, raid);
 }
 
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli_and_ptmsi(uint32_t tlli,
@@ -168,24 +220,33 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_by_ptmsi(uint32_t p_tmsi)
 {
 	struct sgsn_mm_ctx *ctx;
 
-	llist_for_each_entry(ctx, &sgsn->mm_list, list) {
-		if (p_tmsi == ctx->p_tmsi ||
-		    (ctx->p_tmsi_old && ctx->p_tmsi_old == p_tmsi))
+	hash_for_each_possible(sgsn->mm_by_ptmsi, ctx, hlist_by_ptmsi, p_tmsi) {
+		if (p_tmsi == ctx->p_tmsi)
 			return ctx;
 	}
+
+	hash_for_each_possible(sgsn->mm_by_ptmsi_old, ctx, hlist_by_ptmsi_old, p_tmsi) {
+		if (ctx->p_tmsi_old && ctx->p_tmsi_old == p_tmsi)
+			return ctx;
+	}
+
 	return NULL;
 }
 
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_imsi(const char *imsi)
 {
 	struct sgsn_mm_ctx *ctx;
+	uint32_t key;
 
-	llist_for_each_entry(ctx, &sgsn->mm_list, list) {
+	if (!imsi || !imsi[0])
+		return NULL;
+
+	key = sgsn_imsi_hashkey(imsi);
+	hash_for_each_possible(sgsn->mm_by_imsi, ctx, hlist_by_imsi, key) {
 		if (!strcmp(imsi, ctx->imsi))
 			return ctx;
 	}
 	return NULL;
-
 }
 
 /* Allocate a new SGSN MM context, generic part */
@@ -255,6 +316,7 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_alloc_gb(uint32_t tlli,
 	memcpy(&ctx->ra, raid, sizeof(ctx->ra));
 	ctx->ran_type = MM_CTX_T_GERAN_Gb;
 	ctx->gb.tlli = tlli;
+	sgsn_mm_ctx_rehash_tlli(ctx);
 	osmo_fsm_inst_update_id_f(ctx->gb.mm_state_fsm, "%" PRIu32, tlli);
 
 	return ctx;
@@ -296,6 +358,12 @@ static void sgsn_mm_ctx_free(struct sgsn_mm_ctx *mm)
 #ifdef BUILD_IU
 	sgsn_mm_iu_unreachable_timer_stop(mm);
 #endif
+
+	hash_del(&mm->hlist_by_imsi);
+	hash_del(&mm->hlist_by_ptmsi);
+	hash_del(&mm->hlist_by_ptmsi_old);
+	hash_del(&mm->hlist_by_tlli);
+	hash_del(&mm->hlist_by_tlli_new);
 
 	/* Unlink from global list of MM contexts */
 	llist_del(&mm->list);
@@ -400,7 +468,6 @@ struct sgsn_pdp_ctx *sgsn_pdp_ctx_by_tid(const struct sgsn_mm_ctx *mm,
 
 uint32_t sgsn_alloc_ptmsi(void)
 {
-	struct sgsn_mm_ctx *mm;
 	uint32_t ptmsi = 0xdeadbeef;
 	int max_retries = 100, rc = 0;
 
@@ -433,12 +500,10 @@ restart:
 		goto restart;
 	}
 
-	llist_for_each_entry(mm, &sgsn->mm_list, list) {
-		if (mm->p_tmsi == ptmsi) {
-			if (!max_retries--)
-				goto failed;
-			goto restart;
-		}
+	if (sgsn_mm_ctx_by_ptmsi(ptmsi)) {
+		if (!max_retries--)
+			goto failed;
+		goto restart;
 	}
 
 	return ptmsi;
