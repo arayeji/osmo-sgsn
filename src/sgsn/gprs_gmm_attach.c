@@ -3,11 +3,8 @@
 #include <osmocom/core/tdef.h>
 #include <osmocom/crypt/utran_cipher.h>
 
-#include <osmocom/sgsn/gprs_gmm_attach.h>
-
-#include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
-#include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/gprs_gmm.h>
+#include <osmocom/sgsn/gprs_gmm_attach.h>
 #include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/gprs_ranap.h>
 #include <osmocom/sgsn/sgsn.h>
@@ -226,6 +223,23 @@ static void st_accept(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	}
 }
 
+static void gmm_attach_fsm_cleanup(struct osmo_fsm_inst *fi, enum osmo_fsm_term_cause cause)
+{
+	struct sgsn_mm_ctx *ctx = fi->priv;
+
+	if (!ctx)
+		return;
+
+	/* fi is being torn down; do not osmo_fsm_inst_free() it again. */
+	ctx->gmm_att_req.fsm = NULL;
+	if (ctx->gmm_att_req.attach_req) {
+		msgb_free(ctx->gmm_att_req.attach_req);
+		ctx->gmm_att_req.attach_req = NULL;
+	}
+
+	gprs_gmm_mm_ctx_cleanup_free(ctx, "GMM ATTACH REJ");
+}
+
 static void st_reject(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 {
 	struct sgsn_mm_ctx *ctx = fi->priv;
@@ -234,7 +248,8 @@ static void st_reject(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	if (reject_cause != GMM_DISCARD_MS_WITHOUT_REJECT)
 		gsm48_tx_gmm_att_rej(ctx, (uint8_t) reject_cause);
 
-	sgsn_mm_ctx_cleanup_free(ctx);
+	/* Cannot sgsn_mm_ctx_cleanup_free() from inside this FSM action. */
+	osmo_fsm_inst_term(fi, OSMO_FSM_TERM_REGULAR, NULL);
 }
 
 static void st_ask_vlr_on_enter(struct osmo_fsm_inst *fi, uint32_t prev_state)
@@ -466,6 +481,7 @@ struct osmo_fsm gmm_attach_req_fsm = {
 	.event_names = gmm_attach_req_fsm_event_names,
 	.allstate_event_mask = X(E_REJECT) | X(E_ATTACH_REQ_RECV),
 	.allstate_action = gmm_attach_allstate_action,
+	.cleanup = gmm_attach_fsm_cleanup,
 	.log_subsys = DMM,
 	.timer_cb = gmm_attach_timer_cb,
 };
@@ -476,9 +492,13 @@ static __attribute__((constructor)) void gprs_gmm_fsm_init(void)
 }
 
 void gmm_att_req_free(struct sgsn_mm_ctx *mm) {
-	if (mm->gmm_att_req.fsm)
+	if (mm->gmm_att_req.fsm) {
 		osmo_fsm_inst_free(mm->gmm_att_req.fsm);
+		mm->gmm_att_req.fsm = NULL;
+	}
 
-	if (mm->gmm_att_req.attach_req)
+	if (mm->gmm_att_req.attach_req) {
 		msgb_free(mm->gmm_att_req.attach_req);
+		mm->gmm_att_req.attach_req = NULL;
+	}
 }

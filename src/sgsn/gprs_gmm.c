@@ -181,7 +181,7 @@ void mmctx2msgid(struct msgb *msg, const struct sgsn_mm_ctx *mm)
 	MSG_IU_UE_CTX_SET(msg, mm->iu.ue_ctx);
 }
 
-static void mm_ctx_cleanup_free(struct sgsn_mm_ctx *ctx, const char *log_text)
+void gprs_gmm_mm_ctx_cleanup_free(struct sgsn_mm_ctx *ctx, const char *log_text)
 {
 	LOGMMCTXP(LOGL_INFO, ctx, "Cleaning MM context due to %s\n", log_text);
 
@@ -722,7 +722,7 @@ static int gsm48_rx_gmm_auth_ciph_resp(struct sgsn_mm_ctx *ctx,
 	ctx->sec_ctx = check_auth_resp(ctx, false, &at->vec, res, res_len);
 	if (!sgsn_mm_ctx_is_authenticated(ctx)) {
 		rc = gsm48_tx_gmm_auth_ciph_rej(ctx);
-		mm_ctx_cleanup_free(ctx, "GMM AUTH AND CIPH REJECT");
+		gprs_gmm_mm_ctx_cleanup_free(ctx, "GMM AUTH AND CIPH REJECT");
 		return rc;
 	}
 
@@ -785,7 +785,7 @@ static int gsm48_rx_gmm_auth_ciph_fail(struct sgsn_mm_ctx *ctx,
 
 	LOGMMCTXP(LOGL_NOTICE, ctx, "Authentication failed\n");
 	rc = gsm48_tx_gmm_auth_ciph_rej(ctx);
-	mm_ctx_cleanup_free(ctx, "GMM AUTH FAILURE");
+	gprs_gmm_mm_ctx_cleanup_free(ctx, "GMM AUTH FAILURE");
 	return rc;
 }
 
@@ -1090,14 +1090,14 @@ void gsm0408_gprs_access_denied(struct sgsn_mm_ctx *ctx, int gmm_cause)
 		gsm48_tx_gmm_detach_req(
 			ctx, GPRS_DET_T_MT_IMSI, gmm_cause);
 
-		mm_ctx_cleanup_free(ctx, "auth lost");
+		gprs_gmm_mm_ctx_cleanup_free(ctx, "auth lost");
 		break;
 	default:
 		LOGMMCTXP(LOGL_INFO, ctx,
 			  "Authorization lost, cause is '%s' (%d)\n",
 			  get_value_string(gsm48_gmm_cause_names, gmm_cause),
 			  gmm_cause);
-		mm_ctx_cleanup_free(ctx, "auth lost");
+		gprs_gmm_mm_ctx_cleanup_free(ctx, "auth lost");
 	}
 }
 
@@ -1113,7 +1113,7 @@ void gsm0408_gprs_access_cancelled(struct sgsn_mm_ctx *ctx, int gmm_cause)
 	}
 
 	LOGMMCTXP(LOGL_INFO, ctx, "Cancelled, deleting context silently\n");
-	mm_ctx_cleanup_free(ctx, "access cancelled");
+	gprs_gmm_mm_ctx_cleanup_free(ctx, "access cancelled");
 }
 
 /* Parse Chapter 9.4.13 Identity Response */
@@ -1165,7 +1165,7 @@ static int gsm48_rx_gmm_id_resp(struct sgsn_mm_ctx *ctx, struct msgb *msg)
 				       "p_tmsi_old=0x%08x\n",
 					ictx->p_tmsi);
 
-				mm_ctx_cleanup_free(ictx, "GMM IMSI re-use");
+				gprs_gmm_mm_ctx_cleanup_free(ictx, "GMM IMSI re-use");
 			}
 		}
 		OSMO_STRLCPY_ARRAY(ctx->imsi, mi.imsi);
@@ -1445,7 +1445,7 @@ rejected:
 		  get_value_string(gsm48_gmm_cause_names, reject_cause), reject_cause);
 	rc = gsm48_tx_gmm_att_rej_oldmsg(msg, reject_cause);
 	if (ctx)
-		mm_ctx_cleanup_free(ctx, "GMM ATTACH REJ");
+		gprs_gmm_mm_ctx_cleanup_free(ctx, "GMM ATTACH REJ");
 	else if (llme)
 		gprs_llgmm_unassign(llme);
 
@@ -1540,7 +1540,7 @@ static int gsm48_rx_gmm_det_req(struct sgsn_mm_ctx *ctx, struct msgb *msg)
 		memset(&sig_data, 0, sizeof(sig_data));
 		sig_data.mm = ctx;
 		osmo_signal_dispatch(SS_SGSN, S_SGSN_DETACH, &sig_data);
-		mm_ctx_cleanup_free(ctx, "GMM DETACH REQUEST");
+		gprs_gmm_mm_ctx_cleanup_free(ctx, "GMM DETACH REQUEST");
 	}
 
 	return rc;
@@ -1847,7 +1847,7 @@ rejected:
 		  get_value_string(gsm48_gmm_cause_names, reject_cause), reject_cause);
 	rc = gsm48_tx_gmm_ra_upd_rej(msg, reject_cause);
 	if (mmctx)
-		mm_ctx_cleanup_free(mmctx, "GMM RA UPDATE REJ");
+		gprs_gmm_mm_ctx_cleanup_free(mmctx, "GMM RA UPDATE REJ");
 	else if (llme)
 		gprs_llgmm_unassign(llme);
 #ifdef BUILD_IU
@@ -2152,7 +2152,7 @@ int gsm0408_rcv_gmm(struct sgsn_mm_ctx *mmctx, struct msgb *msg,
 		if (!mmctx)
 			goto null_mmctx;
 		LOGMMCTXP(LOGL_INFO, mmctx, "-> DETACH ACK\n");
-		mm_ctx_cleanup_free(mmctx, "GMM DETACH ACK");
+		gprs_gmm_mm_ctx_cleanup_free(mmctx, "GMM DETACH ACK");
 		rc = 0;
 		break;
 	case GSM48_MT_GMM_ATTACH_COMPL:
@@ -2211,7 +2211,7 @@ static void mmctx_timer_cb(void *_mm)
 	case 3350:	/* waiting for ATTACH COMPLETE */
 		if (mm->num_T_exp >= 5) {
 			LOGMMCTXP(LOGL_NOTICE, mm, "T3350 expired >= 5 times\n");
-			mm_ctx_cleanup_free(mm, "T3350");
+			gprs_gmm_mm_ctx_cleanup_free(mm, "T3350");
 			/* FIXME: should we return some error? */
 			break;
 		}
@@ -2237,14 +2237,14 @@ static void mmctx_timer_cb(void *_mm)
 	case 3360:	/* waiting for AUTH AND CIPH RESP */
 		if (mm->num_T_exp >= 5) {
 			LOGMMCTXP(LOGL_NOTICE, mm, "T3360 expired >= 5 times\n");
-			mm_ctx_cleanup_free(mm, "T3360");
+			gprs_gmm_mm_ctx_cleanup_free(mm, "T3360");
 			break;
 		}
 		/* Re-transmit the respective msg and re-start timer */
 		if (mm->auth_triplet.key_seq == GSM_KEY_SEQ_INVAL) {
 			LOGMMCTXP(LOGL_ERROR, mm,
 				  "timeout: invalid auth triplet reference\n");
-			mm_ctx_cleanup_free(mm, "T3360");
+			gprs_gmm_mm_ctx_cleanup_free(mm, "T3360");
 			break;
 		}
 		at = &mm->auth_triplet;
@@ -2261,7 +2261,7 @@ static void mmctx_timer_cb(void *_mm)
 		if (mm->num_T_exp >= 5) {
 			LOGMMCTXP(LOGL_NOTICE, mm, "T3370 expired >= 5 times\n");
 			gsm48_tx_gmm_att_rej(mm, GMM_CAUSE_MS_ID_NOT_DERIVED);
-			mm_ctx_cleanup_free(mm, "GMM ATTACH REJECT (T3370)");
+			gprs_gmm_mm_ctx_cleanup_free(mm, "GMM ATTACH REJECT (T3370)");
 			break;
 		}
 		/* re-tranmit IDENTITY REQUEST and re-start timer */
@@ -2297,7 +2297,7 @@ int gsm0408_gprs_force_reattach(struct sgsn_mm_ctx *mmctx)
 	rc = gsm48_tx_gmm_detach_req(
 		mmctx, GPRS_DET_T_MT_REATT_REQ, GMM_CAUSE_IMPL_DETACHED);
 
-	mm_ctx_cleanup_free(mmctx, "forced reattach");
+	gprs_gmm_mm_ctx_cleanup_free(mmctx, "forced reattach");
 
 	return rc;
 }

@@ -28,6 +28,7 @@ int gsm0408_gprs_force_reattach_oldmsg(struct msgb *msg,
 void gsm0408_gprs_access_granted(struct sgsn_mm_ctx *mmctx);
 void gsm0408_gprs_access_denied(struct sgsn_mm_ctx *mmctx, int gmm_cause);
 void gsm0408_gprs_access_cancelled(struct sgsn_mm_ctx *mmctx, int gmm_cause);
+void gprs_gmm_mm_ctx_cleanup_free(struct sgsn_mm_ctx *ctx, const char *log_text);
 void gsm0408_gprs_authenticate(struct sgsn_mm_ctx *mmctx);
 
 int gprs_gmm_rx_suspend(struct osmo_routing_area_id *raid, uint32_t tlli);

@@ -122,9 +122,24 @@ static void sgsn_mm_ctx_hash_remove(struct sgsn_mm_ctx *mm)
 	hash_del(&mm->hlist_by_tlli_new);
 }
 
+static bool sgsn_mm_ctx_list_linked(const struct sgsn_mm_ctx *mm)
+{
+	const struct llist_head *n = &mm->list;
+
+	return n->next && n->prev &&
+	       n->next != (struct llist_head *)LLIST_POISON1;
+}
+
+static void sgsn_mm_ctx_unlink(struct sgsn_mm_ctx *mm)
+{
+	sgsn_mm_ctx_hash_remove(mm);
+	if (sgsn_mm_ctx_list_linked(mm))
+		llist_del_init(&mm->list);
+}
+
 static bool sgsn_mm_ctx_list_active(const struct sgsn_mm_ctx *mm)
 {
-	return !llist_empty(&mm->list);
+	return sgsn_mm_ctx_list_linked(mm);
 }
 
 static struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli_hash(uint32_t tlli,
@@ -307,6 +322,11 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_alloc(uint32_t rate_ctr_id)
 #endif
 
 	INIT_LLIST_HEAD(&ctx->pdp_list);
+	INIT_HLIST_NODE(&ctx->hlist_by_imsi);
+	INIT_HLIST_NODE(&ctx->hlist_by_ptmsi);
+	INIT_HLIST_NODE(&ctx->hlist_by_ptmsi_old);
+	INIT_HLIST_NODE(&ctx->hlist_by_tlli);
+	INIT_HLIST_NODE(&ctx->hlist_by_tlli_new);
 
 	llist_add(&ctx->list, &sgsn->mm_list);
 
@@ -385,8 +405,8 @@ static void sgsn_mm_ctx_free(struct sgsn_mm_ctx *mm)
 
 	sgsn_mm_ctx_hash_remove(mm);
 
-	/* Unlink from global list of MM contexts */
-	llist_del(&mm->list);
+	if (sgsn_mm_ctx_list_linked(mm))
+		llist_del(&mm->list);
 
 	/* Free all PDP contexts */
 	llist_for_each_entry_safe(pdp, pdp2, &mm->pdp_list, list)
@@ -403,8 +423,8 @@ void sgsn_mm_ctx_cleanup_free(struct sgsn_mm_ctx *mm)
 	struct sgsn_pdp_ctx *pdp, *pdp2;
 	struct sgsn_signal_data sig_data;
 
-	/* Drop from lookup hashes before any nested code may run */
-	sgsn_mm_ctx_hash_remove(mm);
+	/* Drop from lookup hashes and global list before any nested code may run */
+	sgsn_mm_ctx_unlink(mm);
 
 	if (mm->ran_type == MM_CTX_T_GERAN_Gb)
 		llme = mm->gb.llme;
