@@ -44,7 +44,6 @@
 #include <osmocom/sgsn/sccp.h>
 #include <osmocom/sgsn/sgsn.h>
 #include <osmocom/sgsn/sgsn_pdp_gn.h>
-#include <osmocom/sgsn/iu_rnc_fsm.h>
 
 #define IU_RNC_API_MAX 16
 
