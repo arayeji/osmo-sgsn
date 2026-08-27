@@ -328,7 +328,6 @@ static char *build_stats_json(void)
 	char ts[32];
 #if BUILD_IU
 	unsigned asp_up = 0;
-	struct ranap_iu_rnc *rnc;
 	int32_t iu_active = 0, iu_total = 0;
 #endif
 
@@ -359,7 +358,9 @@ static char *build_stats_json(void)
 		attach_rej = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_rejected");
 	}
 
-	pdp_act = api_ctr_current(sgsn->rate_ctrs, "pdp:activate_accepted");
+	pdp_act = 0;
+	if (sgsn->rate_ctrs)
+		pdp_act = api_ctr_current(sgsn->rate_ctrs, "pdp:activate_accepted");
 
 #if BUILD_IU
 	if (sgsn->statg) {
@@ -429,26 +430,8 @@ static char *build_stats_json(void)
 	cur = json_append(cur, start, &space, "],");
 
 #if BUILD_IU
-	cur = json_append(cur, start, &space, "\"iu_rnc\":[");
-	first = true;
-	llist_for_each_entry(rnc, &sgsn->rnc_list, entry) {
-		bool connected;
-
-		if (!api_iu_rnc_usable(rnc))
-			continue;
-		connected = rnc->fi->state == IU_RNC_ST_READY;
-
-		if (!first)
-			cur = json_append(cur, start, &space, ",");
-		first = false;
-		api_fmt_rnc_id(&rnc->rnc_id, esc, 512);
-		cur = json_append(cur, start, &space, "{\"name\":\"%s\",", esc);
-		api_fmt_sccp_pc(&rnc->sccp_addr, esc, 512);
-		cur = json_append(cur, start, &space,
-				  "\"remote_ip\":\"%s\",\"connected\":%s}",
-				  esc, connected ? "true" : "false");
-	}
-	cur = json_append(cur, start, &space, "],},");
+	/* RNC details are exposed on /v1/links; keep /v1/stats lightweight. */
+	cur = json_append(cur, start, &space, "\"iu_rnc\":[]},");
 	/* Do not walk all rate_ctr groups here: a bad group name can crash the
 	 * whole SGSN while PrettyNMS polls /v1/stats. ASP details live in /v1/links. */
 	cur = json_append(cur, start, &space,
