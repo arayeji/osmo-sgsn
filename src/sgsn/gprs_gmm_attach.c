@@ -264,14 +264,14 @@ static void gmm_attach_fsm_cleanup(struct osmo_fsm_inst *fi, enum osmo_fsm_term_
 	if (!ctx)
 		return;
 
-	/* fi is being torn down; do not osmo_fsm_inst_free() it again. */
+	/* fi is being torn down; do not osmo_fsm_inst_free() it again.
+	 * Do not free ctx here: we are still inside osmo_fsm_inst_term()
+	 * and the instance is talloc-parented by ctx. */
 	ctx->gmm_att_req.fsm = NULL;
 	if (ctx->gmm_att_req.attach_req) {
 		msgb_free(ctx->gmm_att_req.attach_req);
 		ctx->gmm_att_req.attach_req = NULL;
 	}
-
-	gprs_gmm_mm_ctx_cleanup_free(ctx, "GMM ATTACH REJ");
 }
 
 static void st_reject(struct osmo_fsm_inst *fi, uint32_t event, void *data)
@@ -282,8 +282,9 @@ static void st_reject(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	if (reject_cause != GMM_DISCARD_MS_WITHOUT_REJECT)
 		gsm48_tx_gmm_att_rej(ctx, (uint8_t) reject_cause);
 
-	/* Cannot sgsn_mm_ctx_cleanup_free() from inside this FSM action. */
 	osmo_fsm_inst_term(fi, OSMO_FSM_TERM_REGULAR, NULL);
+	/* term finished; the attach FSM is gone. Free the MM context now. */
+	gprs_gmm_mm_ctx_cleanup_free(ctx, "GMM ATTACH REJ");
 }
 
 static void st_ask_vlr_on_enter(struct osmo_fsm_inst *fi, uint32_t prev_state)
