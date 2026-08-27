@@ -100,8 +100,14 @@ static int sgsn_ranap_rab_ass_resp(struct sgsn_mm_ctx *ctx, RANAP_RAB_SetupOrMod
 	uint8_t rab_id;
 	bool require_pdp_update = false;
 	struct sgsn_pdp_ctx *pdp = NULL;
-	RANAP_RAB_SetupOrModifiedItem_t *item = &setup_ies->raB_SetupOrModifiedItem;
+	RANAP_RAB_SetupOrModifiedItem_t *item;
 	int rc;
+
+	if (!setup_ies) {
+		LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Response without Setup IEs\n");
+		return -EINVAL;
+	}
+	item = &setup_ies->raB_SetupOrModifiedItem;
 
 	if (!item->rAB_ID.buf || item->rAB_ID.size < 1) {
 		LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Response without RAB-ID\n");
@@ -115,9 +121,17 @@ static int sgsn_ranap_rab_ass_resp(struct sgsn_mm_ctx *ctx, RANAP_RAB_SetupOrMod
 		sgsn_mm_ctx_iu_ranap_release_free(ctx, NULL);
 		return -1;
 	}
+	if (!pdp->lib) {
+		LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Response for NSAPI=%u without GTP context\n", rab_id);
+		return -EINVAL;
+	}
 
 	if (item->transportLayerAddress) {
 		struct osmo_sockaddr addr;
+		if (!item->transportLayerAddress->buf || item->transportLayerAddress->size < 1) {
+			LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Resp: Transport Layer Address without buffer\n");
+			goto ret_error;
+		}
 		LOGPC(DRANAP, LOGL_INFO, " Setup: (%u/%s)", rab_id, osmo_hexdump(item->transportLayerAddress->buf,
 								     item->transportLayerAddress->size));
 		rc = ranap_transp_layer_addr_decode2(&addr, NULL, item->transportLayerAddress);
@@ -161,8 +175,13 @@ static int sgsn_ranap_rab_ass_resp(struct sgsn_mm_ctx *ctx, RANAP_RAB_SetupOrMod
 		require_pdp_update = true;
 	}
 
-	if (require_pdp_update)
+	if (require_pdp_update) {
+		if (!pdp->ggsn || !pdp->ggsn->gsn) {
+			LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Response NSAPI=%u has no GGSN\n", rab_id);
+			goto ret_error;
+		}
 		gtp_update_context(pdp->ggsn->gsn, pdp->lib, pdp, &pdp->lib->hisaddr0);
+	}
 
 	if (pdp->state != PDP_STATE_CR_CONF) {
 		send_act_pdp_cont_acc(pdp);
@@ -617,14 +636,31 @@ static int ranap_handle_co_iu_rel_req(struct ranap_ue_conn_ctx *ue_ctx, const RA
 
 static int ranap_handle_co_rab_ass_resp(struct ranap_ue_conn_ctx *ue_ctx, const RANAP_RAB_AssignmentResponseIEs_t *ies)
 {
-	int rc = -1;
+	int rc = 0;
+
+	if (!ies) {
+		LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Response without IEs\n");
+		return -EINVAL;
+	}
 
 	LOGP(DRANAP, LOGL_INFO,
 	       "Rx RAB Assignment Response for UE conn_id %u\n", ue_ctx->conn_id);
 	if (ies->presenceMask & RAB_ASSIGNMENTRESPONSEIES_RANAP_RAB_SETUPORMODIFIEDLIST_PRESENT) {
 		/* TODO: Iterate over list of SetupOrModifiedList IEs and handle each one */
-		RANAP_IE_t *ranap_ie = ies->raB_SetupOrModifiedList.raB_SetupOrModifiedList_ies.list.array[0];
+		RANAP_IE_t *ranap_ie;
 		RANAP_RAB_SetupOrModifiedItemIEs_t setup_ies;
+
+		if (!ies->raB_SetupOrModifiedList.raB_SetupOrModifiedList_ies.list.array
+		    || ies->raB_SetupOrModifiedList.raB_SetupOrModifiedList_ies.list.count < 1) {
+			LOGP(DRANAP, LOGL_ERROR,
+			     "RAB Assignment Response with empty SetupOrModified list\n");
+			return -EINVAL;
+		}
+		ranap_ie = ies->raB_SetupOrModifiedList.raB_SetupOrModifiedList_ies.list.array[0];
+		if (!ranap_ie) {
+			LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Response with NULL RAB IE\n");
+			return -EINVAL;
+		}
 
 		rc = ranap_decode_rab_setupormodifieditemies_fromlist(&setup_ies, &ranap_ie->value);
 		if (rc) {

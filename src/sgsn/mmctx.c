@@ -733,8 +733,14 @@ void sgsn_mm_ctx_iu_activate_rabs(struct sgsn_mm_ctx *ctx)
 	struct sgsn_pdp_ctx *pdp;
 	OSMO_ASSERT(ctx->ran_type == MM_CTX_T_UTRAN_Iu);
 
-	llist_for_each_entry(pdp, &ctx->pdp_list, list)
+	if (!ctx->iu.ue_ctx)
+		return;
+
+	llist_for_each_entry(pdp, &ctx->pdp_list, list) {
+		if (!pdp->lib)
+			continue;
 		sgsn_pdp_ctx_iu_rab_activate(pdp, pdp->nsapi);
+	}
 }
 
 /* send a Iu Release Command and free afterwards the UE context */
