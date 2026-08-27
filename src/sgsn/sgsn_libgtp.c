@@ -612,8 +612,19 @@ static int create_pdp_conf(struct pdp_t *pdp, void *cbp, int cause)
 		return send_act_pdp_cont_acc(pctx);
 	} else if (pctx->mm->ran_type == MM_CTX_T_UTRAN_Iu) {
 #ifdef BUILD_IU
-		/* Activate a radio bearer */
-		sgsn_pdp_ctx_iu_rab_activate(pctx, pdp->nsapi);
+		/* Activate a radio bearer. Accept is sent after RAB response. */
+		if (sgsn_pdp_ctx_iu_rab_activate(pctx, pdp->nsapi) < 0) {
+			if (!pctx->mm->iu.ue_ctx) {
+				LOGPDPCTXP(LOGL_NOTICE, pctx,
+					   "CREATE PDP confirmed but Iu is gone; "
+					   "will assign RAB on the next Iu\n");
+				return 0;
+			}
+			LOGPDPCTXP(LOGL_ERROR, pctx,
+				   "CREATE PDP confirmed but RAB Assignment failed\n");
+			reject_cause = GSM_CAUSE_NET_FAIL;
+			goto reject;
+		}
 		return 0;
 #else
 		return -ENOTSUP;

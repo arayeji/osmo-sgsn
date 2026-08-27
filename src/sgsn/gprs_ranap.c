@@ -103,6 +103,10 @@ static int sgsn_ranap_rab_ass_resp(struct sgsn_mm_ctx *ctx, RANAP_RAB_SetupOrMod
 	RANAP_RAB_SetupOrModifiedItem_t *item = &setup_ies->raB_SetupOrModifiedItem;
 	int rc;
 
+	if (!item->rAB_ID.buf || item->rAB_ID.size < 1) {
+		LOGP(DRANAP, LOGL_ERROR, "RAB Assignment Response without RAB-ID\n");
+		return -EINVAL;
+	}
 	rab_id = item->rAB_ID.buf[0];
 
 	pdp = sgsn_pdp_ctx_by_nsapi(ctx, rab_id);

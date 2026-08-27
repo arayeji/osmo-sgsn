@@ -516,6 +516,18 @@ static int do_act_pdp_req(struct sgsn_mm_ctx *mmctx, struct msgb *msg, bool *del
 		/* We already have a PDP context for this TLLI + NSAPI tuple */
 		if (pdp->sapi == act_req->req_llc_sapi &&
 		    pdp->ti == transaction_id) {
+#ifdef BUILD_IU
+			/* Iu: Accept is sent only after RAB Assignment Response.
+			 * Retransmit RAB if still waiting; do not fake Accept. */
+			if (pdp->mm->ran_type == MM_CTX_T_UTRAN_Iu &&
+			    pdp->state != PDP_STATE_CR_CONF) {
+				LOGMMCTXP(LOGL_NOTICE, mmctx,
+					  "Retransmitted ACTIVATE PDP while waiting for RAB (state=%d)\n",
+					  pdp->state);
+				sgsn_pdp_ctx_iu_rab_activate(pdp, pdp->nsapi);
+				return 0;
+			}
+#endif
 			/* This apparently is a re-transmission of a PDP CTX
 			 * ACT REQ (our ACT ACK must have got dropped) */
 			rc = gsm48_tx_gsm_act_pdp_acc(pdp);

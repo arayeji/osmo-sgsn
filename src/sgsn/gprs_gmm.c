@@ -1464,9 +1464,11 @@ static int gsm48_rx_gmm_att_compl(struct sgsn_mm_ctx *mmctx)
 	LOGMMCTXP(LOGL_INFO, mmctx, "-> GMM ATTACH COMPLETE\n");
 
 #ifdef BUILD_IU
-	if (mmctx->iu.ue_ctx) {
-		sgsn_ranap_iu_tx_release(mmctx->iu.ue_ctx, NULL);
-	}
+	/* Keep Iu after Attach Complete. Releasing here races the typical
+	 * Activate PDP on this same Iu: GTP Create succeeds, then RAB cannot
+	 * be assigned because ue_ctx was already freed. */
+	if (mmctx->iu.ue_ctx)
+		LOGMMCTXP(LOGL_INFO, mmctx, "Keeping Iu after Attach Complete\n");
 #endif
 
 	mmctx_timer_stop(mmctx, 3350);

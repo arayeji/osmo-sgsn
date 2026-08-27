@@ -145,6 +145,8 @@ static void st_pmm_idle(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	case E_PMM_RA_UPDATE:
 		sgsn_mm_iu_unreachable_timer_stop(ctx);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_CONNECTED);
+		/* GTP Create may have succeeded while Iu was already released. */
+		sgsn_mm_ctx_iu_activate_rabs(ctx);
 		break;
 	case E_PMM_PS_CONN_RELEASE:
 		break;
