@@ -98,16 +98,20 @@ static void json_escape(const char *in, char *out, size_t out_len)
  * instead of calling osmo_sccp_addr_dump() / walking bad list nodes. */
 static bool api_iu_rnc_usable(const struct ranap_iu_rnc *rnc)
 {
-	if (!rnc)
+	if (!rnc || !rnc->scu_iups)
 		return false;
-	if (!rnc->fi || rnc->fi->priv != rnc)
+	if (!rnc->fi)
+		return false;
+	if (talloc_parent(rnc->fi) != rnc)
+		return false;
+	if (rnc->fi->priv != rnc)
 		return false;
 	if (rnc->fi->fsm != &iu_rnc_fsm)
 		return false;
 	return true;
 }
 
-static void api_fmt_rnc_state(const struct ranap_iu_rnc *rnc, char *out, size_t out_len)
+static void api_fmt_iu_rnc_state(const struct ranap_iu_rnc *rnc, char *out, size_t out_len)
 {
 	if (!out || !out_len)
 		return;
@@ -115,7 +119,23 @@ static void api_fmt_rnc_state(const struct ranap_iu_rnc *rnc, char *out, size_t 
 		out[0] = '\0';
 		return;
 	}
-	snprintf(out, out_len, "%s", osmo_fsm_inst_state_name(rnc->fi));
+	switch (rnc->fi->state) {
+	case IU_RNC_ST_READY:
+		snprintf(out, out_len, "READY");
+		break;
+	case IU_RNC_ST_WAIT_RX_RESET:
+		snprintf(out, out_len, "WAIT_RX_RESET");
+		break;
+	case IU_RNC_ST_WAIT_RX_RESET_ACK:
+		snprintf(out, out_len, "WAIT_RX_RESET_ACK");
+		break;
+	case IU_RNC_ST_DISCARDING:
+		snprintf(out, out_len, "DISCARDING");
+		break;
+	default:
+		snprintf(out, out_len, "UNKNOWN");
+		break;
+	}
 }
 
 static void api_fmt_rnc_id(const struct osmo_rnc_id *id, char *out, size_t out_len)
@@ -140,21 +160,6 @@ static void api_fmt_sccp_pc(const struct osmo_sccp_addr *addr, char *out, size_t
 	snprintf(out, out_len, "pc=%u", addr->pc);
 }
 
-static unsigned api_iu_rnc_ra_count(const struct ranap_iu_rnc *rnc)
-{
-	unsigned count = 0;
-	struct iu_lac_rac_entry *lre;
-
-	if (!api_iu_rnc_usable(rnc))
-		return 0;
-
-	llist_for_each_entry(lre, &rnc->lac_rac_list, entry) {
-		count++;
-		if (count >= 4096)
-			break;
-	}
-	return count;
-}
 #endif
 
 static const char *mm_state_name(const struct sgsn_mm_ctx *mm)
@@ -235,8 +240,11 @@ static unsigned api_sgsn_pdp_count(void)
 
 	if (!sgsn)
 		return 0;
-	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list)
+	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list) {
 		count++;
+		if (count >= 65535)
+			break;
+	}
 	return count;
 }
 
@@ -247,8 +255,11 @@ static unsigned api_ggsn_pdp_count(const struct sgsn_ggsn_ctx *ggsn)
 
 	if (!ggsn)
 		return 0;
-	llist_for_each_entry(pdp, &ggsn->pdp_list, ggsn_list)
+	llist_for_each_entry(pdp, &ggsn->pdp_list, ggsn_list) {
 		count++;
+		if (count >= 65535)
+			break;
+	}
 	return count;
 }
 
@@ -585,11 +596,11 @@ static char *build_links_json(void)
 	struct ranap_iu_rnc *rnc;
 #endif
 
-	start = talloc_zero_size(g_api_ctx, 64 * 1024);
+	start = talloc_zero_size(g_api_ctx, 512 * 1024);
 	if (!start)
 		return NULL;
 	cur = start;
-	space = 64 * 1024;
+	space = 512 * 1024;
 	esc = talloc_size(g_api_ctx, 512);
 	if (!esc)
 		return NULL;
@@ -698,10 +709,10 @@ static char *build_links_json(void)
 		cur = json_append(cur, start, &space, "{\"rnc_id\":\"%s\",", esc);
 		api_fmt_sccp_pc(&rnc->sccp_addr, esc, 512);
 		cur = json_append(cur, start, &space, "\"sccp_addr\":\"%s\",", esc);
-		api_fmt_rnc_state(rnc, esc, 512);
+		api_fmt_iu_rnc_state(rnc, esc, 512);
 		cur = json_append(cur, start, &space,
-				  "\"state\":\"%s\",\"routing_areas\":%u}",
-				  esc, api_iu_rnc_ra_count(rnc));
+				  "\"state\":\"%s\"}",
+				  esc);
 	}
 	cur = json_append(cur, start, &space, "]}}");
 #else

@@ -295,6 +295,7 @@ static void iu_rnc_fsm_cleanup(struct osmo_fsm_inst *fi, enum osmo_fsm_term_caus
 	if (rnc->fi->state == IU_RNC_ST_READY)
 		sgsn_stat_dec(SGSN_STAT_IU_PEERS_ACTIVE, 1);
 	sgsn_stat_dec(SGSN_STAT_IU_PEERS_TOTAL, 1);
+	rnc->fi = NULL;
 }
 
 static const struct osmo_fsm_state iu_rnc_fsm_states[] = {

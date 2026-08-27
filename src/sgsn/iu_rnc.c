@@ -115,6 +115,11 @@ struct ranap_iu_rnc *iu_rnc_find_or_create(const struct osmo_rnc_id *rnc_id,
 	/* Make sure we know this rnc_id and that this SCCP address is in our records */
 	rnc = iu_rnc_find_by_id(rnc_id);
 	if (rnc) {
+		if (!rnc->fi) {
+			rnc->fi = osmo_fsm_inst_alloc(&iu_rnc_fsm, rnc, rnc, LOGL_INFO, NULL);
+			OSMO_ASSERT(rnc->fi);
+			sgsn_stat_inc(SGSN_STAT_IU_PEERS_TOTAL, 1);
+		}
 		if (!osmo_sccp_addr_ri_cmp(&rnc->sccp_addr, addr)) {
 			LOGP(DRANAP, LOGL_NOTICE, "RNC %s changed its SCCP addr to %s\n",
 			     osmo_rnc_id_name(&rnc->rnc_id), osmo_sccp_addr_dump(addr));
