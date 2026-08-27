@@ -23,6 +23,8 @@
 
 #include "config.h"
 
+#include <errno.h>
+
 #include <asn1c/asn1helpers.h>
 
 #include <osmocom/gtp/gtp.h>
@@ -61,7 +63,7 @@
 static int iu_grnc_id_parse(struct osmo_rnc_id *dst, const struct RANAP_GlobalRNC_ID *src)
 {
 	/* The size is coming from arbitrary sender, check it gracefully */
-	if (src->pLMNidentity.size != 3) {
+	if (!src->pLMNidentity.buf || src->pLMNidentity.size != 3) {
 		LOGP(DRANAP, LOGL_ERROR, "Invalid PLMN Identity size: should be 3, is %d\n",
 		     src->pLMNidentity.size);
 		return -1;
@@ -192,12 +194,14 @@ static int sgsn_ranap_iu_event_mmctx(struct ranap_ue_conn_ctx *ctx, enum ranap_i
 	case RANAP_IU_EVENT_LINK_INVALIDATED:
 		/* Clean up ranap_ue_conn_ctx here */
 		LOGMMCTXP(LOGL_INFO, mm, "IU release (cause=%s)\n", iu_client_event_type_str(type));
-		rc = osmo_fsm_inst_dispatch(mm->iu.mm_state_fsm, E_PMM_PS_CONN_RELEASE, NULL);
-		if (rc < 0)
-			sgsn_mm_ctx_iu_ranap_free(mm);
+		osmo_fsm_inst_dispatch(mm->iu.mm_state_fsm, E_PMM_PS_CONN_RELEASE, NULL);
+		/* Always drop the Iu UE ctx. PMM-Detached now accepts RELEASE as a
+		 * no-op, so we cannot rely on dispatch failing to trigger free. */
+		sgsn_mm_ctx_iu_ranap_free(mm);
 
 		/* TODO: move this into FSM */
-		if (mm->ran_type == MM_CTX_T_UTRAN_Iu && mm->gmm_att_req.fsm->state != ST_INIT)
+		if (mm->ran_type == MM_CTX_T_UTRAN_Iu && mm->gmm_att_req.fsm
+		    && mm->gmm_att_req.fsm->state != ST_INIT)
 			osmo_fsm_inst_dispatch(mm->gmm_att_req.fsm, E_REJECT, (void *) GMM_DISCARD_MS_WITHOUT_REJECT);
 		rc = 0;
 		break;
@@ -208,6 +212,10 @@ static int sgsn_ranap_iu_event_mmctx(struct ranap_ue_conn_ctx *ctx, enum ranap_i
 		 * has moved away from it a long time ago.
 		 */
 		/* Continue authentication here */
+		if (!mm->iu.ue_ctx) {
+			LOGMMCTXP(LOGL_ERROR, mm, "Security Mode Complete without Iu UE ctx\n");
+			break;
+		}
 		mm->iu.ue_ctx->integrity_active = 1;
 		sgsn_ranap_iu_tx_common_id(mm->iu.ue_ctx, mm->imsi);
 
@@ -252,18 +260,36 @@ int sgsn_ranap_iu_event(struct ranap_ue_conn_ctx *ctx, enum ranap_iu_event_type 
 	}
 }
 
+static int iu_ue_tx(struct ranap_ue_conn_ctx *uectx, struct msgb *msg)
+{
+	if (!msg)
+		return -EINVAL;
+	if (!uectx || !uectx->rnc || !uectx->rnc->scu_iups) {
+		LOGP(DRANAP, LOGL_ERROR,
+		     "Drop RANAP TX: missing UE/RNC/SCCP user (ue=%p rnc=%p)\n",
+		     uectx, uectx ? uectx->rnc : NULL);
+		msgb_free(msg);
+		return -ENOTCONN;
+	}
+	return sgsn_scu_iups_tx_data_req(uectx->rnc->scu_iups, uectx->conn_id, msg);
+}
+
 int sgsn_ranap_iu_tx_rab_ps_ass_req(struct ranap_ue_conn_ctx *ue_ctx,
 				    uint8_t rab_id, uint32_t gtp_ip, uint32_t gtp_tei)
 {
 	struct msgb *msg;
-	bool use_x213_nsap = (ue_ctx->rab_assign_addr_enc == RANAP_NSAP_ADDR_ENC_X213);
+	bool use_x213_nsap;
+
+	if (!ue_ctx)
+		return -ENOTCONN;
+	use_x213_nsap = (ue_ctx->rab_assign_addr_enc == RANAP_NSAP_ADDR_ENC_X213);
 
 	LOGP(DRANAP, LOGL_DEBUG,
 	     "Assigning RAB: rab_id=%u, ggsn_ip=%x, teid_gn=%x, use_x213_nsap=%d\n",
 	     rab_id, gtp_ip, gtp_tei, use_x213_nsap);
 
 	msg = ranap_new_msg_rab_assign_data(rab_id, gtp_ip, gtp_tei, use_x213_nsap);
-	return sgsn_scu_iups_tx_data_req(ue_ctx->rnc->scu_iups, ue_ctx->conn_id, msg);
+	return iu_ue_tx(ue_ctx, msg);
 }
 
 int sgsn_ranap_iu_tx_sec_mode_cmd(struct ranap_ue_conn_ctx *uectx, struct osmo_auth_vector *vec,
@@ -274,18 +300,21 @@ int sgsn_ranap_iu_tx_sec_mode_cmd(struct ranap_ue_conn_ctx *uectx, struct osmo_a
 	/* create RANAP message */
 	msg = ranap_new_msg_sec_mod_cmd(vec->ik, send_ck ? vec->ck : NULL,
 			new_key ? RANAP_KeyStatus_new : RANAP_KeyStatus_old);
-	return sgsn_scu_iups_tx_data_req(uectx->rnc->scu_iups, uectx->conn_id, msg);
+	return iu_ue_tx(uectx, msg);
 }
 
 int sgsn_ranap_iu_tx_common_id(struct ranap_ue_conn_ctx *uectx, const char *imsi)
 {
 	struct msgb *msg;
 
+	if (!uectx)
+		return -ENOTCONN;
+
 	LOGP(DRANAP, LOGL_INFO, "Transmitting RANAP CommonID (SCCP conn_id %u)\n",
 	     uectx->conn_id);
 
 	msg = ranap_new_msg_common_id(imsi);
-	return sgsn_scu_iups_tx_data_req(uectx->rnc->scu_iups, uectx->conn_id, msg);
+	return iu_ue_tx(uectx, msg);
 }
 
 int sgsn_ranap_iu_tx(struct msgb *msg_nas, uint8_t sapi)
@@ -296,6 +325,7 @@ int sgsn_ranap_iu_tx(struct msgb *msg_nas, uint8_t sapi)
 	if (!uectx) {
 		LOGP(DRANAP, LOGL_ERROR,
 		     "Discarding to-be-transmitted L3 Message as RANAP DT with unset dst SCCP conn_id!\n");
+		msgb_free(msg_nas);
 		return -ENOTCONN;
 	}
 
@@ -304,6 +334,8 @@ int sgsn_ranap_iu_tx(struct msgb *msg_nas, uint8_t sapi)
 
 	msg = ranap_new_msg_dt(sapi, msg_nas->data, msgb_length(msg_nas));
 	msgb_free(msg_nas);
+	if (!msg)
+		return -ENOMEM;
 
 	{
 		struct sgsn_mm_ctx *mm = sgsn_mm_ctx_by_ue_ctx(uectx);
@@ -312,7 +344,7 @@ int sgsn_ranap_iu_tx(struct msgb *msg_nas, uint8_t sapi)
 			sgsn_api_trace_packet_mm(mm, "ranap", true, msg->data, msgb_length(msg));
 	}
 
-	return sgsn_scu_iups_tx_data_req(uectx->rnc->scu_iups, uectx->conn_id, msg);
+	return iu_ue_tx(uectx, msg);
 }
 
 /* Send CL RANAP message over SCCP: */
@@ -354,13 +386,16 @@ int sgsn_ranap_iu_tx_release(struct ranap_ue_conn_ctx *uectx, const struct RANAP
 		cause = &default_cause;
 
 	msg = ranap_new_msg_iu_rel_cmd(cause);
-	return sgsn_scu_iups_tx_data_req(uectx->rnc->scu_iups, uectx->conn_id, msg);
+	return iu_ue_tx(uectx, msg);
 }
 
 void sgsn_ranap_iu_tx_release_free(struct ranap_ue_conn_ctx *ctx,
 				   const struct RANAP_Cause *cause,
 				   int timeout)
 {
+	if (!ctx)
+		return;
+
 	ctx->notification = false;
 	ctx->free_on_release = true;
 	int ret = sgsn_ranap_iu_tx_release(ctx, cause);
@@ -403,6 +438,12 @@ static int ranap_handle_co_initial_ue(struct ranap_iu_rnc *rnc,
 		LOGP(DRANAP, LOGL_ERROR,
 		     "Failed to parse RANAP Global-RNC-ID IE\n");
 		return -1;
+	}
+
+	if (!ies->nas_pdu.buf || !ies->nas_pdu.size) {
+		LOGP(DRANAP, LOGL_ERROR, "InitialUE without NAS PDU\n");
+		msgb_free(msg);
+		return -EINVAL;
 	}
 
 	sai = asn1str_to_u16(&ies->sai.sAC);
@@ -505,6 +546,12 @@ static int ranap_handle_co_dt(struct ranap_ue_conn_ctx *ue_ctx, const RANAP_Dire
 	struct gprs_ra_id _ra_id, *ra_id = NULL;
 	uint16_t _sai, *sai = NULL;
 	struct msgb *msg = msgb_alloc(256, "RANAP->NAS");
+
+	if (!ies->nas_pdu.buf || !ies->nas_pdu.size) {
+		LOGP(DRANAP, LOGL_ERROR, "DirectTransfer without NAS PDU\n");
+		msgb_free(msg);
+		return -EINVAL;
+	}
 
 	if (ies->presenceMask & DIRECTTRANSFERIES_RANAP_LAI_PRESENT) {
 		if (ranap_parse_lai(&_ra_id, &ies->lai) != 0) {
@@ -668,6 +715,11 @@ int sgsn_ranap_iu_rx_co_msg(struct ranap_ue_conn_ctx *ue_ctx, const uint8_t *dat
 	mm = sgsn_mm_ctx_by_ue_ctx(ue_ctx);
 	if (mm && mm->imsi[0])
 		sgsn_api_trace_packet_mm(mm, "ranap", false, data, len);
+
+	if (!ue_ctx || !ue_ctx->rnc || !ue_ctx->rnc->fi) {
+		LOGP(DRANAP, LOGL_ERROR, "RANAP CO message for UE without RNC\n");
+		return -ENOTCONN;
+	}
 
 	rc = ranap_cn_rx_co_decode2(&ev_ctx.message, data, len);
 	if (rc != 0) {

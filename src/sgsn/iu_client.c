@@ -94,15 +94,22 @@ void sgsn_ranap_iu_free_ue(struct ranap_ue_conn_ctx *ue_ctx)
 		return;
 
 	osmo_timer_del(&ue_ctx->release_timeout);
-	osmo_sccp_tx_disconn(ue_ctx->rnc->scu_iups->scu, ue_ctx->conn_id, NULL, 0);
+	if (ue_ctx->rnc && ue_ctx->rnc->scu_iups && ue_ctx->rnc->scu_iups->scu)
+		osmo_sccp_tx_disconn(ue_ctx->rnc->scu_iups->scu, ue_ctx->conn_id, NULL, 0);
 	llist_del(&ue_ctx->list);
 	talloc_free(ue_ctx);
 }
 
 void ue_conn_ctx_link_invalidated_free(struct ranap_ue_conn_ctx *ue)
 {
-	uint32_t conn_id = ue->conn_id;
-	struct sgsn_sccp_user_iups *scu_iups = ue->rnc->scu_iups;
+	uint32_t conn_id;
+	struct sgsn_sccp_user_iups *scu_iups;
+
+	if (!ue || !ue->rnc || !ue->rnc->scu_iups)
+		return;
+
+	conn_id = ue->conn_id;
+	scu_iups = ue->rnc->scu_iups;
 
 	global_iu_event(ue, RANAP_IU_EVENT_LINK_INVALIDATED, NULL);
 

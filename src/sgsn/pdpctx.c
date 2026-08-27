@@ -21,6 +21,7 @@
 
 #include "config.h"
 
+#include <errno.h>
 #include <stdint.h>
 
 #include <osmocom/core/linuxlist.h>
@@ -177,9 +178,13 @@ int sgsn_pdp_ctx_iu_rab_activate(struct sgsn_pdp_ctx *pdp, uint8_t rab_id)
 
 	OSMO_ASSERT(mm->ran_type == MM_CTX_T_UTRAN_Iu);
 	ue_ctx = mm->iu.ue_ctx;
+	if (!ue_ctx || !pdp->lib || pdp->lib->gsnru.l < 4) {
+		LOGPDPCTXP(LOGL_ERROR, pdp, "Cannot activate RAB: missing Iu ctx or GGSN user-plane address\n");
+		return -EINVAL;
+	}
 
 	/* Get the IP address for ggsn user plane */
-	memcpy(&ggsn_ip, pdp->lib->gsnru.v, pdp->lib->gsnru.l);
+	memcpy(&ggsn_ip, pdp->lib->gsnru.v, 4);
 	ggsn_ip = htonl(ggsn_ip);
 
 	LOGPDPCTXP(LOGL_INFO, pdp, "Activate RAB: rab_id=%u, ggsn_ip=%x, teid_gn=%x\n",
