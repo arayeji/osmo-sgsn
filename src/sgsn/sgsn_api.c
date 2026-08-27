@@ -148,22 +148,31 @@ static unsigned api_iu_rnc_ra_count(const struct ranap_iu_rnc *rnc)
 	if (!api_iu_rnc_usable(rnc))
 		return 0;
 
-	llist_for_each_entry(lre, &rnc->lac_rac_list, entry)
+	llist_for_each_entry(lre, &rnc->lac_rac_list, entry) {
 		count++;
+		if (count >= 4096)
+			break;
+	}
 	return count;
 }
 #endif
 
 static const char *mm_state_name(const struct sgsn_mm_ctx *mm)
 {
+	if (!mm)
+		return "unknown";
+
 	switch (mm->ran_type) {
 	case MM_CTX_T_UTRAN_Iu:
 #if BUILD_IU
-		return osmo_fsm_inst_state_name(mm->iu.mm_state_fsm);
+		if (mm->iu.mm_state_fsm)
+			return osmo_fsm_inst_state_name(mm->iu.mm_state_fsm);
 #endif
 		break;
 	case MM_CTX_T_GERAN_Gb:
-		return osmo_fsm_inst_state_name(mm->gb.mm_state_fsm);
+		if (mm->gb.mm_state_fsm)
+			return osmo_fsm_inst_state_name(mm->gb.mm_state_fsm);
+		break;
 	default:
 		break;
 	}
@@ -404,8 +413,12 @@ static char *build_mm_json(const struct sgsn_mm_ctx *mm, bool include_pdp)
 	cur = json_append(cur, start, &space, "\"msisdn\":\"%s\",", esc);
 	cur = json_append(cur, start, &space, "\"p_tmsi\":\"%08x\",", mm->p_tmsi);
 	cur = json_append(cur, start, &space, "\"tlli\":\"%08x\",", mm->gb.tlli);
-	json_escape(osmo_fsm_inst_state_name(mm->gmm_fsm), esc, sizeof(esc));
-	cur = json_append(cur, start, &space, "\"gmm_state\":\"%s\",", esc);
+	if (mm->gmm_fsm) {
+		json_escape(osmo_fsm_inst_state_name(mm->gmm_fsm), esc, sizeof(esc));
+		cur = json_append(cur, start, &space, "\"gmm_state\":\"%s\",", esc);
+	} else {
+		cur = json_append(cur, start, &space, "\"gmm_state\":\"unknown\",");
+	}
 	json_escape(osmo_rai_name2(&mm->ra), esc, sizeof(esc));
 	cur = json_append(cur, start, &space, "\"routing_area\":\"%s\",", esc);
 	cur = json_append(cur, start, &space, "\"cell_id\":%u,", mm->gb.cell_id);
@@ -468,26 +481,40 @@ static char *build_mm_list_json(bool include_pdp)
 {
 	char *start, *cur, *entry;
 	size_t space;
-	bool first = true;
+	unsigned total = 0, emitted = 0;
 	struct sgsn_mm_ctx *mm;
+	bool first = true;
 
-	start = talloc_zero_size(g_api_ctx, 256 * 1024);
+#define API_MM_LIST_MAX 64
+
+	llist_for_each_entry(mm, &sgsn->mm_list, list)
+		total++;
+
+	start = talloc_zero_size(g_api_ctx, 512 * 1024);
 	if (!start)
 		return NULL;
 	cur = start;
-	space = 256 * 1024;
-	cur = json_append(cur, start, &space, "{\"count\":%u,\"mm_contexts\":[",
-			   llist_count(&sgsn->mm_list));
+	space = 512 * 1024;
+	cur = json_append(cur, start, &space,
+			 "{\"count\":%u,\"truncated\":%s,\"mm_contexts\":[",
+			 total, total > API_MM_LIST_MAX ? "true" : "false");
 
 	llist_for_each_entry(mm, &sgsn->mm_list, list) {
+		if (!mm->imsi[0])
+			continue;
+		if (emitted >= API_MM_LIST_MAX)
+			break;
 		if (!first)
 			cur = json_append(cur, start, &space, ",");
 		first = false;
+		emitted++;
 		entry = build_mm_json(mm, include_pdp);
 		if (!entry)
 			continue;
 		cur = json_append(cur, start, &space, "%s", entry);
 		talloc_free(entry);
+		if (space < 4096)
+			break;
 	}
 	cur = json_append(cur, start, &space, "]}");
 	return start;
@@ -501,22 +528,31 @@ static char *build_pdp_list_json(void)
 	char addr[INET6_ADDRSTRLEN + 8];
 	char apnbuf[APN_MAXLEN + 1];
 	struct sgsn_pdp_ctx *pdp;
+	unsigned total = 0, emitted = 0;
 	bool first = true;
 
-	start = talloc_zero_size(g_api_ctx, 256 * 1024);
+#define API_PDP_LIST_MAX 128
+
+	total = api_sgsn_pdp_count();
+
+	start = talloc_zero_size(g_api_ctx, 512 * 1024);
 	if (!start)
 		return NULL;
 	cur = start;
-	space = 256 * 1024;
-	cur = json_append(cur, start, &space, "{\"count\":%u,\"pdp_contexts\":[",
-			   api_sgsn_pdp_count());
+	space = 512 * 1024;
+	cur = json_append(cur, start, &space,
+			 "{\"count\":%u,\"truncated\":%s,\"pdp_contexts\":[",
+			 total, total > API_PDP_LIST_MAX ? "true" : "false");
 
 	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list) {
-		const char *imsi = pdp->mm ? pdp->mm->imsi : "";
+		const char *imsi = (pdp->mm && pdp->mm->imsi[0]) ? pdp->mm->imsi : "";
 
+		if (emitted >= API_PDP_LIST_MAX)
+			break;
 		if (!first)
 			cur = json_append(cur, start, &space, ",");
 		first = false;
+		emitted++;
 
 		json_escape(imsi, esc, sizeof(esc));
 		cur = json_append(cur, start, &space, "{\"imsi\":\"%s\",\"nsapi\":%u,\"sapi\":%u,\"ti\":%u,",
@@ -531,6 +567,8 @@ static char *build_pdp_list_json(void)
 		} else {
 			cur = json_append(cur, start, &space, "\"apn\":\"\",\"pdp_address\":\"\"}");
 		}
+		if (space < 4096)
+			break;
 	}
 	cur = json_append(cur, start, &space, "]}");
 	return start;
