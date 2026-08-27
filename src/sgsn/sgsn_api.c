@@ -304,11 +304,8 @@ static char *build_stats_json(void)
 	char ts[32];
 #if BUILD_IU
 	unsigned asp_up = 0;
-	uint64_t msu_rx = 0, msu_tx = 0, msu_disc = 0;
 	struct ranap_iu_rnc *rnc;
-	struct osmo_ss7_instance *ss7;
 	int32_t iu_active = 0, iu_total = 0;
-	char *asps_json = NULL;
 #endif
 
 	start = talloc_zero_size(g_api_ctx, 256 * 1024);
@@ -351,8 +348,7 @@ static char *build_stats_json(void)
 		if (it)
 			iu_total = osmo_stat_item_get_last(it);
 	}
-
-	ss7 = osmo_ss7_instance_find(sgsn->cfg.iu.cs7_instance);
+	asp_up = iu_active;
 #endif
 
 	api_timestamp_iso8601(ts, sizeof(ts));
@@ -429,35 +425,12 @@ static char *build_stats_json(void)
 				  esc, connected ? "true" : "false");
 	}
 	cur = json_append(cur, start, &space, "],},");
-	{
-		struct api_sigtran_ctx stx = {
-			.asps = talloc_zero_size(g_api_ctx, 4096),
-			.asps_space = 4096,
-			.esc = esc,
-			.ss7 = ss7,
-			.asp_up = 0,
-			.msu_rx = 0,
-			.msu_tx = 0,
-			.msu_disc = 0,
-			.first_asp = true,
-		};
-
-		if (stx.asps)
-			rate_ctr_for_each_group(api_sigtran_group_cb, &stx);
-		asp_up = stx.asp_up;
-		msu_rx = stx.msu_rx;
-		msu_tx = stx.msu_tx;
-		msu_disc = stx.msu_disc;
-		asps_json = stx.asps;
-	}
+	/* Do not walk all rate_ctr groups here: a bad group name can crash the
+	 * whole SGSN while PrettyNMS polls /v1/stats. ASP details live in /v1/links. */
 	cur = json_append(cur, start, &space,
-			  "\"sigtran\":{\"asp_up\":%u,\"msu_discarded\":%" PRIu64
-			  ",\"msu_rx\":%" PRIu64 ",\"msu_tx\":%" PRIu64 ",\"asps\":[",
-			  asp_up, msu_disc, msu_rx, msu_tx);
-	if (asps_json && asps_json[0])
-		cur = json_append(cur, start, &space, "%s", asps_json);
-	cur = json_append(cur, start, &space, "]},");
-	talloc_free(asps_json);
+			  "\"sigtran\":{\"asp_up\":%u,\"msu_discarded\":0,"
+			  "\"msu_rx\":0,\"msu_tx\":0,\"asps\":[]},",
+			  asp_up);
 #else
 	cur = json_append(cur, start, &space, "\"iu_rnc\":[]},");
 	cur = json_append(cur, start, &space,
