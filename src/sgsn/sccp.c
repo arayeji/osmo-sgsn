@@ -351,9 +351,7 @@ static int sccp_sap_up(struct osmo_prim_hdr *oph, void *_scu)
 			const struct osmo_sccp_addr *sccp_addr = ue_conn_sccp_addr_find(scu_iups, conn_id);
 			if (!sccp_addr) {
 				LOGP(DSUA, LOGL_NOTICE,
-				     "N-DATA.ind for unknown conn_id (%u), releasing stale SCCP\n",
-				     conn_id);
-				osmo_sccp_tx_disconn(scu, conn_id, NULL, 0);
+				     "N-DATA.ind for unknown conn_id (%u)\n", conn_id);
 				break;
 			}
 			/* Hold copy of address before deleting it: */
