@@ -5,6 +5,8 @@
 
 #include <osmocom/sgsn/gprs_gmm.h>
 #include <osmocom/sgsn/gprs_gmm_attach.h>
+#include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
+#include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/gprs_ranap.h>
 #include <osmocom/sgsn/sgsn.h>
