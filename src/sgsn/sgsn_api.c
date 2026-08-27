@@ -93,6 +93,56 @@ static void json_escape(const char *in, char *out, size_t out_len)
 	out[o] = '\0';
 }
 
+#if BUILD_IU
+/* PrettyNMS polls /v1/links and /v1/stats. Skip corrupt/stale RNC objects
+ * instead of calling osmo_sccp_addr_dump() / walking bad list nodes. */
+static bool api_iu_rnc_usable(const struct ranap_iu_rnc *rnc)
+{
+	if (!rnc || !sgsn)
+		return false;
+	if (talloc_parent((void *)rnc) != sgsn)
+		return false;
+	if (!rnc->fi || rnc->fi->priv != rnc)
+		return false;
+	return true;
+}
+
+static void api_fmt_rnc_id(const struct osmo_rnc_id *id, char *out, size_t out_len)
+{
+	if (!out || !out_len)
+		return;
+	if (!id) {
+		out[0] = '\0';
+		return;
+	}
+	snprintf(out, out_len, "%u-%u-%u", id->plmn.mcc, id->plmn.mnc, id->rnc_id);
+}
+
+static void api_fmt_sccp_pc(const struct osmo_sccp_addr *addr, char *out, size_t out_len)
+{
+	if (!out || !out_len)
+		return;
+	if (!addr) {
+		out[0] = '\0';
+		return;
+	}
+	snprintf(out, out_len, "pc=%u", addr->pc);
+}
+
+static unsigned api_iu_rnc_ra_count(const struct ranap_iu_rnc *rnc)
+{
+	unsigned count = 0;
+	struct iu_lac_rac_entry *lre;
+
+	if (!api_iu_rnc_usable(rnc))
+		return 0;
+
+	llist_for_each_entry(lre, &rnc->lac_rac_list, entry)
+		count++;
+	return count;
+}
+#endif
+
 static const char *mm_state_name(const struct sgsn_mm_ctx *mm)
 {
 	switch (mm->ran_type) {
@@ -245,6 +295,7 @@ static char *build_stats_json(void)
 #if BUILD_IU
 	unsigned asp_up = 0;
 	uint64_t msu_rx = 0, msu_tx = 0, msu_disc = 0;
+	struct ranap_iu_rnc *rnc;
 	struct osmo_ss7_instance *ss7;
 	int32_t iu_active = 0, iu_total = 0;
 	char *asps_json = NULL;
@@ -349,9 +400,26 @@ static char *build_stats_json(void)
 	cur = json_append(cur, start, &space, "],");
 
 #if BUILD_IU
-	/* Do not walk rnc_list here. PrettyNMS polls this endpoint and a
-	 * stale/partial RNC entry GPFs the whole SGSN. */
-	cur = json_append(cur, start, &space, "\"iu_rnc\":[]},");
+	cur = json_append(cur, start, &space, "\"iu_rnc\":[");
+	first = true;
+	llist_for_each_entry(rnc, &sgsn->rnc_list, entry) {
+		bool connected;
+
+		if (!api_iu_rnc_usable(rnc))
+			continue;
+		connected = rnc->fi->state == IU_RNC_ST_READY;
+
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		api_fmt_rnc_id(&rnc->rnc_id, esc, 512);
+		cur = json_append(cur, start, &space, "{\"name\":\"%s\",", esc);
+		api_fmt_sccp_pc(&rnc->sccp_addr, esc, 512);
+		cur = json_append(cur, start, &space,
+				  "\"remote_ip\":\"%s\",\"connected\":%s}",
+				  esc, connected ? "true" : "false");
+	}
+	cur = json_append(cur, start, &space, "],},");
 	{
 		struct api_sigtran_ctx stx = {
 			.asps = talloc_zero_size(g_api_ctx, 4096),
@@ -568,6 +636,9 @@ static char *build_links_json(void)
 	bool first;
 	struct sgsn_ggsn_ctx *ggsn;
 	struct sgsn_mme_ctx *mme;
+#if BUILD_IU
+	struct ranap_iu_rnc *rnc;
+#endif
 
 	start = talloc_zero_size(g_api_ctx, 64 * 1024);
 	if (!start)
@@ -668,8 +739,26 @@ static char *build_links_json(void)
 	}
 
 #if BUILD_IU
-	/* Same as /v1/stats: never walk rnc_list from the HTTP API. */
-	cur = json_append(cur, start, &space, "],\"iu_rnc\":[]}}");
+	/* Same safe walk as /v1/stats. */
+	cur = json_append(cur, start, &space, "],\"iu_rnc\":[");
+	first = true;
+	llist_for_each_entry(rnc, &sgsn->rnc_list, entry) {
+		if (!api_iu_rnc_usable(rnc))
+			continue;
+
+		if (!first)
+			cur = json_append(cur, start, &space, ",");
+		first = false;
+		api_fmt_rnc_id(&rnc->rnc_id, esc, 512);
+		cur = json_append(cur, start, &space, "{\"rnc_id\":\"%s\",", esc);
+		api_fmt_sccp_pc(&rnc->sccp_addr, esc, 512);
+		cur = json_append(cur, start, &space, "\"sccp_addr\":\"%s\",", esc);
+		json_escape(osmo_fsm_inst_state_name(rnc->fi), esc, 512);
+		cur = json_append(cur, start, &space,
+				  "\"state\":\"%s\",\"routing_areas\":%u}",
+				  esc, api_iu_rnc_ra_count(rnc));
+	}
+	cur = json_append(cur, start, &space, "]}}");
 #else
 	cur = json_append(cur, start, &space, "]}}");
 #endif

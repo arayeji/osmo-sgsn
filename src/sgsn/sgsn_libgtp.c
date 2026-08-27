@@ -383,6 +383,28 @@ struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
 			LOGPDPCTXP(LOGL_INFO, pctx,
 				   "UE requested PDP address; not overriding subscribed static IPv4\n");
 		}
+
+		/* UE often omits the APN IE; GGSN rejects Create with MISSING_APN. */
+		if (pdp->apn_use.l == 0) {
+			const char *apn_src = NULL;
+
+			if (sub_pdp && sub_pdp->apn_str[0])
+				apn_src = sub_pdp->apn_str;
+			else if (selected_apn && selected_apn[0])
+				apn_src = selected_apn;
+
+			if (apn_src) {
+				int apn_len = osmo_apn_from_str(pdp->apn_use.v,
+								sizeof(pdp->apn_use.v),
+								apn_src);
+				if (apn_len > 0) {
+					pdp->apn_use.l = apn_len;
+					LOGPDPCTXP(LOGL_NOTICE, pctx,
+						   "Using subscribed APN '%s' in Create-PDP\n",
+						   apn_src);
+				}
+			}
+		}
 	}
 
 	/* Protocol Configuration Options from GMM */
