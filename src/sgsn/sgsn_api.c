@@ -316,51 +316,25 @@ static int api_sigtran_group_cb(struct rate_ctr_group *grp, void *_ctx)
 
 static char *build_stats_json(void)
 {
-	char *start, *cur, *esc;
-	size_t space;
-	unsigned mm_count, pdp_count;
-	uint64_t gtp_queue_full = 0;
-	uint64_t gsn_seq = 0, gsn_pdp_lookup = 0, gsn_unsup = 0, gsn_sendto = 0;
-	unsigned gtp_backlog = 0;
+	unsigned mm_count = 0, pdp_count = 0;
 	uint64_t attach_req = 0, attach_acc = 0, attach_rej = 0, pdp_act = 0;
-	struct sgsn_ggsn_ctx *ggsn;
-	bool first;
 	char ts[32];
 #if BUILD_IU
-	unsigned asp_up = 0;
 	int32_t iu_active = 0, iu_total = 0;
 #endif
 
-	start = talloc_zero_size(g_api_ctx, 256 * 1024);
-	if (!start)
-		return NULL;
-	cur = start;
-	space = 256 * 1024;
-	esc = talloc_size(g_api_ctx, 512);
-	if (!esc)
+	if (!sgsn)
 		return NULL;
 
 	mm_count = llist_count(&sgsn->mm_list);
 	pdp_count = api_sgsn_pdp_count();
 
-	if (sgsn->gsn) {
-		gtp_backlog = api_gtp_queue_backlog(sgsn->gsn);
-		gtp_queue_full = api_ctr_current(sgsn->gsn->ctrg, "err:queuefull");
-		gsn_seq = api_ctr_current(sgsn->gsn->ctrg, "err:seq");
-		gsn_pdp_lookup = api_ctr_current(sgsn->gsn->ctrg, "err:unknown_pdp");
-		gsn_unsup = api_ctr_current(sgsn->gsn->ctrg, "pkt:unsupported");
-		gsn_sendto = api_ctr_current(sgsn->gsn->ctrg, "err:sendto");
-	}
-
 	if (sgsn->rate_ctrs) {
 		attach_req = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_requested");
 		attach_acc = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_accepted");
 		attach_rej = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_rejected");
-	}
-
-	pdp_act = 0;
-	if (sgsn->rate_ctrs)
 		pdp_act = api_ctr_current(sgsn->rate_ctrs, "pdp:activate_accepted");
+	}
 
 #if BUILD_IU
 	if (sgsn->statg) {
@@ -373,93 +347,37 @@ static char *build_stats_json(void)
 		if (it)
 			iu_total = osmo_stat_item_get_last(it);
 	}
-	asp_up = iu_active;
 #endif
 
 	api_timestamp_iso8601(ts, sizeof(ts));
-	cur = json_append(cur, start, &space, "{\"timestamp\":\"%s\",", ts);
-	cur = json_append(cur, start, &space, "\"mm_contexts\":%u,", mm_count);
-	cur = json_append(cur, start, &space, "\"pdp_contexts\":%u,", pdp_count);
-	cur = json_append(cur, start, &space, "\"gtp_queue_backlog_packets\":%u,", gtp_backlog);
-	cur = json_append(cur, start, &space, "\"gtp_queue_full_total\":%" PRIu64 ",",
-			  gtp_queue_full);
 
 #if BUILD_IU
-	cur = json_append(cur, start, &space,
-			  "\"iu\":{\"active_peers\":%d,\"total_peers_seen\":%d},",
-			  iu_active, iu_total);
+	return talloc_asprintf(g_api_ctx,
+			       "{\"timestamp\":\"%s\","
+			       "\"mm_contexts\":%u,"
+			       "\"pdp_contexts\":%u,"
+			       "\"iu\":{\"active_peers\":%d,\"total_peers_seen\":%d},"
+			       "\"network\":{\"iu_rnc\":[]},"
+			       "\"gmm\":{\"attach_requests\":%" PRIu64 ","
+			       "\"attach_accepts\":%" PRIu64 ","
+			       "\"attach_rejects\":%" PRIu64 ","
+			       "\"pdp_activations\":%" PRIu64 "}}",
+			       ts, mm_count, pdp_count, iu_active, iu_total,
+			       attach_req, attach_acc, attach_rej, pdp_act);
 #else
-	cur = json_append(cur, start, &space,
-			  "\"iu\":{\"active_peers\":0,\"total_peers_seen\":0},");
+	return talloc_asprintf(g_api_ctx,
+			       "{\"timestamp\":\"%s\","
+			       "\"mm_contexts\":%u,"
+			       "\"pdp_contexts\":%u,"
+			       "\"iu\":{\"active_peers\":0,\"total_peers_seen\":0},"
+			       "\"network\":{\"iu_rnc\":[]},"
+			       "\"gmm\":{\"attach_requests\":%" PRIu64 ","
+			       "\"attach_accepts\":%" PRIu64 ","
+			       "\"attach_rejects\":%" PRIu64 ","
+			       "\"pdp_activations\":%" PRIu64 "}}",
+			       ts, mm_count, pdp_count,
+			       attach_req, attach_acc, attach_rej, pdp_act);
 #endif
-
-	cur = json_append(cur, start, &space, "\"network\":{");
-	if (sgsn->gsn) {
-		cur = json_append(cur, start, &space, "\"gtp\":{");
-		json_escape(inet_ntoa(sgsn->gsn->gsnc), esc, 512);
-		cur = json_append(cur, start, &space, "\"signalling_ip\":\"%s\",", esc);
-		json_escape(inet_ntoa(sgsn->gsn->gsnu), esc, 512);
-		cur = json_append(cur, start, &space, "\"user_ip\":\"%s\"},", esc);
-	} else {
-		cur = json_append(cur, start, &space, "\"gtp\":null,");
-	}
-
-	if (sgsn->gsup_client) {
-		cur = json_append(cur, start, &space, "\"gsup\":{");
-		cur = json_append(cur, start, &space, "\"connected\":%s},",
-				  osmo_gsup_client_is_connected(sgsn->gsup_client) ? "true" : "false");
-	} else if (sgsn->cfg.gsup_server_addr.sin_addr.s_addr) {
-		cur = json_append(cur, start, &space, "\"gsup\":{\"connected\":false},");
-	} else {
-		cur = json_append(cur, start, &space, "\"gsup\":null,");
-	}
-
-	cur = json_append(cur, start, &space, "\"ggsn\":[");
-	first = true;
-	llist_for_each_entry(ggsn, &sgsn->ggsn_list, list) {
-		if (ggsn->id == UINT32_MAX)
-			continue;
-		if (!first)
-			cur = json_append(cur, start, &space, ",");
-		first = false;
-		json_escape(inet_ntoa(ggsn->remote_addr), esc, 512);
-		cur = json_append(cur, start, &space,
-				  "{\"id\":%u,\"remote_ip\":\"%s\",\"pdp_count\":%u}",
-				  ggsn->id, esc, api_ggsn_pdp_count(ggsn));
-	}
-	cur = json_append(cur, start, &space, "],");
-
-#if BUILD_IU
-	/* RNC details are exposed on /v1/links; keep /v1/stats lightweight. */
-	cur = json_append(cur, start, &space, "\"iu_rnc\":[]},");
-	/* Do not walk all rate_ctr groups here: a bad group name can crash the
-	 * whole SGSN while PrettyNMS polls /v1/stats. ASP details live in /v1/links. */
-	cur = json_append(cur, start, &space,
-			  "\"sigtran\":{\"asp_up\":%u,\"msu_discarded\":0,"
-			  "\"msu_rx\":0,\"msu_tx\":0,\"asps\":[]},",
-			  asp_up);
-#else
-	cur = json_append(cur, start, &space, "\"iu_rnc\":[]},");
-	cur = json_append(cur, start, &space,
-			  "\"sigtran\":{\"asp_up\":0,\"msu_discarded\":0,\"msu_rx\":0,\"msu_tx\":0,\"asps\":[]},");
-#endif
-
-	cur = json_append(cur, start, &space,
-			  "\"gsn\":{\"errors\":{\"queue_full\":%" PRIu64
-			  ",\"sequence_out_of_range\":%" PRIu64
-			  ",\"pdp_lookup_failed\":%" PRIu64
-			  ",\"unsupported_gtp_version\":%" PRIu64
-			  ",\"sendto_errors\":%" PRIu64 "}},",
-			  gtp_queue_full, gsn_seq, gsn_pdp_lookup, gsn_unsup, gsn_sendto);
-	cur = json_append(cur, start, &space,
-			  "\"gmm\":{\"attach_requests\":%" PRIu64
-			  ",\"attach_accepts\":%" PRIu64
-			  ",\"attach_rejects\":%" PRIu64
-			  ",\"pdp_activations\":%" PRIu64 "}}",
-			  attach_req, attach_acc, attach_rej, pdp_act);
-
-	talloc_free(esc);
-	return start;
 }
 
 static char *build_mm_json(const struct sgsn_mm_ctx *mm, bool include_pdp)
