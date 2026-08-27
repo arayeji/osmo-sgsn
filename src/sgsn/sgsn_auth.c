@@ -174,12 +174,14 @@ int sgsn_auth_request(struct sgsn_mm_ctx *mmctx)
 
 	OSMO_ASSERT(mmctx->subscr != NULL);
 
-	if (sgsn->cfg.require_authentication && !sgsn_mm_ctx_is_authenticated(mmctx)) {
+	if (sgsn->cfg.require_authentication) {
 		/* Find next tuple */
 		at = sgsn_auth_get_tuple(mmctx, mmctx->auth_triplet.key_seq);
 
 		if (!at) {
-			/* No valid tuple found, request fresh ones */
+			/* No valid tuple found, request fresh ones.  A stale sec_ctx
+			 * from a prior attempt must not suppress this GSUP query. */
+			mmctx->sec_ctx = OSMO_AUTH_TYPE_NONE;
 			mmctx->auth_triplet.key_seq = GSM_KEY_SEQ_INVAL;
 			LOGMMCTXP(LOGL_INFO, mmctx,
 				  "Requesting authentication tuples\n");
@@ -286,13 +288,13 @@ struct gsm_auth_tuple *sgsn_auth_get_tuple(struct sgsn_mm_ctx *mmctx,
 	if (!mmctx->subscr)
 		return NULL;
 
+	sdata = mmctx->subscr->sgsn_data;
+
 	if (key_seq == GSM_KEY_SEQ_INVAL)
 		/* Start with 0 after increment module array size */
 		idx = ARRAY_SIZE(sdata->auth_triplets) - 1;
 	else
 		idx = key_seq;
-
-	sdata = mmctx->subscr->sgsn_data;
 
 	/* Find next tuple */
 	for (count = ARRAY_SIZE(sdata->auth_triplets); count > 0; count--) {

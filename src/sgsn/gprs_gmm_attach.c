@@ -40,6 +40,8 @@ static void st_init(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 
 	ctx->gmm_att_req.attach_req = msgb_copy(attach_req, "Attach Request");
 	ctx->auth_state = SGSN_AUTH_UNKNOWN;
+	ctx->sec_ctx = OSMO_AUTH_TYPE_NONE;
+	ctx->auth_triplet.key_seq = GSM_KEY_SEQ_INVAL;
 	ctx->gmm_att_req.auth_reattempt = 0;
 
 	/*
@@ -156,6 +158,7 @@ static void st_auth_on_enter(struct osmo_fsm_inst *fi, uint32_t prev_state)
 		if (ctx->auth_triplet.key_seq == GSM_KEY_SEQ_INVAL) {
 			/* invalid key material */
 			gmm_attach_fsm_state_chg(fi, ST_ASK_VLR);
+			break;
 		}
 
 		struct gsm_auth_tuple *at = &ctx->auth_triplet;
