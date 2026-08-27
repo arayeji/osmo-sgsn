@@ -142,8 +142,11 @@ static void st_pmm_idle(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	switch(event) {
 	case E_PMM_PS_ATTACH:
 	case E_PMM_PS_CONN_ESTABLISH:
+	case E_PMM_RA_UPDATE:
 		sgsn_mm_iu_unreachable_timer_stop(ctx);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_CONNECTED);
+		break;
+	case E_PMM_PS_CONN_RELEASE:
 		break;
 	case E_PMM_PS_DETACH:
 		sgsn_mm_iu_unreachable_timer_stop(ctx);
@@ -183,6 +186,8 @@ static struct osmo_fsm_state mm_state_iu_fsm_states[] = {
 			X(E_PMM_PS_DETACH) |
 			X(E_PMM_PS_CONN_ESTABLISH) |
 			X(E_PMM_PS_ATTACH) |
+			X(E_PMM_RA_UPDATE) |
+			X(E_PMM_PS_CONN_RELEASE) |
 			X(E_PMM_RX_GGSN_GTPU_DT_EI),
 		.out_state_mask = X(ST_PMM_DETACHED) | X(ST_PMM_CONNECTED),
 		.name = "Idle",

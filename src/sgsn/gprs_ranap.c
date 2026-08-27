@@ -63,7 +63,7 @@
 static int iu_grnc_id_parse(struct osmo_rnc_id *dst, const struct RANAP_GlobalRNC_ID *src)
 {
 	/* The size is coming from arbitrary sender, check it gracefully */
-	if (!src->pLMNidentity.buf || src->pLMNidentity.size != 3) {
+	if (!src || !src->pLMNidentity.buf || src->pLMNidentity.size != 3) {
 		LOGP(DRANAP, LOGL_ERROR, "Invalid PLMN Identity size: should be 3, is %d\n",
 		     src->pLMNidentity.size);
 		return -1;
@@ -71,6 +71,17 @@ static int iu_grnc_id_parse(struct osmo_rnc_id *dst, const struct RANAP_GlobalRN
 	osmo_plmn_from_bcd(&src->pLMNidentity.buf[0], &dst->plmn);
 	dst->rnc_id = (uint16_t)src->rNC_ID;
 	return 0;
+}
+
+/* libosmo-ranap ranap_parse_lai() calls osmo_plmn_from_bcd() with no NULL
+ * check. Empty PLMN buf SEGVs in libosmogsm. */
+static int sgsn_ranap_parse_lai(struct gprs_ra_id *ra_id, const RANAP_LAI_t *lai)
+{
+	if (!lai || !lai->pLMNidentity.buf || lai->pLMNidentity.size != 3) {
+		LOGP(DRANAP, LOGL_ERROR, "RANAP LAI missing/invalid PLMN identity\n");
+		return -1;
+	}
+	return ranap_parse_lai(ra_id, lai);
 }
 
 /* not used at present */
@@ -417,8 +428,9 @@ static int ranap_handle_co_initial_ue(struct ranap_iu_rnc *rnc,
 	struct ranap_ue_conn_ctx *ue;
 	struct msgb *msg = msgb_alloc(256, "RANAP->NAS");
 
-	if (ranap_parse_lai(&ra_id, &ies->lai) != 0) {
+	if (sgsn_ranap_parse_lai(&ra_id, &ies->lai) != 0) {
 		LOGP(DRANAP, LOGL_ERROR, "Failed to parse RANAP LAI IE\n");
+		msgb_free(msg);
 		return -1;
 	}
 
@@ -554,8 +566,9 @@ static int ranap_handle_co_dt(struct ranap_ue_conn_ctx *ue_ctx, const RANAP_Dire
 	}
 
 	if (ies->presenceMask & DIRECTTRANSFERIES_RANAP_LAI_PRESENT) {
-		if (ranap_parse_lai(&_ra_id, &ies->lai) != 0) {
+		if (sgsn_ranap_parse_lai(&_ra_id, &ies->lai) != 0) {
 			LOGP(DRANAP, LOGL_ERROR, "Failed to parse RANAP LAI IE\n");
+			msgb_free(msg);
 			return -1;
 		}
 		ra_id = &_ra_id;
