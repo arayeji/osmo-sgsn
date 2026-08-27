@@ -98,13 +98,24 @@ static void json_escape(const char *in, char *out, size_t out_len)
  * instead of calling osmo_sccp_addr_dump() / walking bad list nodes. */
 static bool api_iu_rnc_usable(const struct ranap_iu_rnc *rnc)
 {
-	if (!rnc || !sgsn)
-		return false;
-	if (talloc_parent((void *)rnc) != sgsn)
+	if (!rnc)
 		return false;
 	if (!rnc->fi || rnc->fi->priv != rnc)
 		return false;
+	if (rnc->fi->fsm != &iu_rnc_fsm)
+		return false;
 	return true;
+}
+
+static void api_fmt_rnc_state(const struct ranap_iu_rnc *rnc, char *out, size_t out_len)
+{
+	if (!out || !out_len)
+		return;
+	if (!api_iu_rnc_usable(rnc)) {
+		out[0] = '\0';
+		return;
+	}
+	snprintf(out, out_len, "%s", osmo_fsm_inst_state_name(rnc->fi));
 }
 
 static void api_fmt_rnc_id(const struct osmo_rnc_id *id, char *out, size_t out_len)
@@ -288,7 +299,6 @@ static char *build_stats_json(void)
 	uint64_t gsn_seq = 0, gsn_pdp_lookup = 0, gsn_unsup = 0, gsn_sendto = 0;
 	unsigned gtp_backlog = 0;
 	uint64_t attach_req = 0, attach_acc = 0, attach_rej = 0, pdp_act = 0;
-	struct sgsn_mm_ctx *mm;
 	struct sgsn_ggsn_ctx *ggsn;
 	bool first;
 	char ts[32];
@@ -301,11 +311,11 @@ static char *build_stats_json(void)
 	char *asps_json = NULL;
 #endif
 
-	start = talloc_zero_size(g_api_ctx, 64 * 1024);
+	start = talloc_zero_size(g_api_ctx, 256 * 1024);
 	if (!start)
 		return NULL;
 	cur = start;
-	space = 64 * 1024;
+	space = 256 * 1024;
 	esc = talloc_size(g_api_ctx, 512);
 	if (!esc)
 		return NULL;
@@ -328,8 +338,7 @@ static char *build_stats_json(void)
 		attach_rej = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_rejected");
 	}
 
-	llist_for_each_entry(mm, &sgsn->mm_list, list)
-		pdp_act += api_ctr_current(mm->ctrg, "pdp_ctx_act");
+	pdp_act = api_ctr_current(sgsn->rate_ctrs, "pdp:activate_accepted");
 
 #if BUILD_IU
 	if (sgsn->statg) {
@@ -753,7 +762,7 @@ static char *build_links_json(void)
 		cur = json_append(cur, start, &space, "{\"rnc_id\":\"%s\",", esc);
 		api_fmt_sccp_pc(&rnc->sccp_addr, esc, 512);
 		cur = json_append(cur, start, &space, "\"sccp_addr\":\"%s\",", esc);
-		json_escape(osmo_fsm_inst_state_name(rnc->fi), esc, 512);
+		api_fmt_rnc_state(rnc, esc, 512);
 		cur = json_append(cur, start, &space,
 				  "\"state\":\"%s\",\"routing_areas\":%u}",
 				  esc, api_iu_rnc_ra_count(rnc));
