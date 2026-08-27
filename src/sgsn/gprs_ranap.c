@@ -468,6 +468,17 @@ int sgsn_ranap_iu_rx_co_initial_msg(struct sgsn_sccp_user_iups *scu_iups,
 	}
 
 	ev_ctx.rnc = iu_rnc_find_by_addr(rem_sccp_addr);
+	if (!ev_ctx.rnc &&
+	    ev_ctx.message.direction == RANAP_RANAP_PDU_PR_initiatingMessage &&
+	    ev_ctx.message.procedureCode == RANAP_ProcedureCode_id_InitialUE_Message) {
+		struct osmo_rnc_id rnc_id = {};
+		if (iu_grnc_id_parse(&rnc_id, &ev_ctx.message.msg.initialUE_MessageIEs.globalRNC_ID) == 0) {
+			LOGP(DRANAP, LOGL_NOTICE,
+			     "InitialUE from unknown RNC %s at %s, creating peer\n",
+			     osmo_rnc_id_name(&rnc_id), osmo_sccp_addr_dump(rem_sccp_addr));
+			ev_ctx.rnc = iu_rnc_find_or_create(&rnc_id, scu_iups, rem_sccp_addr);
+		}
+	}
 	if (!ev_ctx.rnc)
 		goto tx_err_ind;
 
@@ -707,28 +718,29 @@ static int ranap_handle_cl_reset_req(struct sgsn_sccp_user_iups *scu_iups,
 
 	/* FIXME: support handling Extended RNC-ID instead of Global RNC-ID */
 
-	if (!(ies->presenceMask & RESETIES_RANAP_GLOBALRNC_ID_PRESENT)) {
-		LOGP(DRANAP, LOGL_ERROR,
-		     "Rx RESET: Missing RANAP Global-RNC-ID IE\n");
-		cause = (RANAP_Cause_t){
-			.present = RANAP_Cause_PR_protocol,
-			.choice.protocol = RANAP_CauseProtocol_transfer_syntax_error,
-		};
-		return sgsn_ranap_iu_tx_error_ind(scu_iups, &ud_prim->calling_addr, &cause);
+	if (ies->presenceMask & RESETIES_RANAP_GLOBALRNC_ID_PRESENT) {
+		grnc_id = &ies->globalRNC_ID;
+		if (iu_grnc_id_parse(&rnc_id, grnc_id) != 0) {
+			LOGP(DRANAP, LOGL_ERROR,
+			     "Rx RESET: Failed to parse RANAP Global-RNC-ID IE\n");
+			cause = (RANAP_Cause_t){
+				.present = RANAP_Cause_PR_protocol,
+				.choice.protocol = RANAP_CauseProtocol_transfer_syntax_error,
+			};
+			return sgsn_ranap_iu_tx_error_ind(scu_iups, &ud_prim->calling_addr, &cause);
+		}
+	} else {
+		/* Some RNCs omit Global-RNC-ID. Still accept RESET so Iu
+		 * recovers after SGSN restart; identify the peer by SCCP PC. */
+		LOGP(DRANAP, LOGL_NOTICE,
+		     "Rx RESET: Missing Global-RNC-ID, creating RNC from SCCP %s\n",
+		     osmo_sccp_addr_dump(&ud_prim->calling_addr));
+		rnc_id.rnc_id = ud_prim->calling_addr.pc;
 	}
-	grnc_id = &ies->globalRNC_ID;
 
-	if (iu_grnc_id_parse(&rnc_id, grnc_id) != 0) {
-		LOGP(DRANAP, LOGL_ERROR,
-		     "Rx RESET: Failed to parse RANAP Global-RNC-ID IE\n");
-		cause = (RANAP_Cause_t){
-			.present = RANAP_Cause_PR_protocol,
-			.choice.protocol = RANAP_CauseProtocol_transfer_syntax_error,
-		};
-		return sgsn_ranap_iu_tx_error_ind(scu_iups, &ud_prim->calling_addr, &cause);
-	}
-
-	rnc = iu_rnc_find_or_create(&rnc_id, scu_iups, &ud_prim->calling_addr);
+	rnc = iu_rnc_find_by_addr(&ud_prim->calling_addr);
+	if (!rnc)
+		rnc = iu_rnc_find_or_create(&rnc_id, scu_iups, &ud_prim->calling_addr);
 	OSMO_ASSERT(rnc);
 	rc = osmo_fsm_inst_dispatch(rnc->fi, IU_RNC_EV_RX_RESET, NULL);
 	if (rc != 0) {
