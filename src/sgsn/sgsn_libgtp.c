@@ -492,10 +492,15 @@ struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
    connected. */
 int sgsn_delete_pdp_ctx(struct sgsn_pdp_ctx *pctx)
 {
-	LOGPDPCTXP(LOGL_INFO, pctx, "Delete PDP Context\n");
+	if (!pctx || !pctx->ggsn || !pctx->lib)
+		return -EINVAL;
+	if (pctx->state != PDP_STATE_CR_CONF) {
+		LOGPDPCTXP(LOGL_NOTICE, pctx,
+			   "Skip Delete PDP Context, not confirmed on Gn yet\n");
+		return -EINVAL;
+	}
 
-	OSMO_ASSERT(pctx->ggsn);
-	OSMO_ASSERT(pctx->lib);
+	LOGPDPCTXP(LOGL_INFO, pctx, "Delete PDP Context\n");
 
 	/* FIXME: decide if we need teardown or not ! */
 	return gtp_delete_context_req2(pctx->ggsn->gsn, pctx->lib, pctx, 1);

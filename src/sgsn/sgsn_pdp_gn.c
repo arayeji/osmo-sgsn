@@ -93,6 +93,14 @@ void sgsn_mm_ctx_delete_all_pdp_gn(struct sgsn_mm_ctx *mm)
 	llist_for_each_entry_safe(pdp, pdp2, &mm->pdp_list, list) {
 		if (!pdp->ggsn || !pdp->lib)
 			continue;
+		/* Create PDP still in flight: GGSN address IEs are empty and
+		 * libgtp Delete-PDP SEGVs on GSN address len=0. */
+		if (pdp->state != PDP_STATE_CR_CONF) {
+			LOGPDPCTXP(LOGL_NOTICE, pdp,
+				   "Skip Gn delete, PDP not confirmed yet (state=%d)\n",
+				   pdp->state);
+			continue;
+		}
 		LOGPDPCTXP(LOGL_NOTICE, pdp, "Deleting PDP context on Gn\n");
 		sgsn_delete_pdp_ctx(pdp);
 	}

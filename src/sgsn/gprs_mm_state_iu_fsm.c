@@ -67,6 +67,8 @@ static void mmctx_change_gtpu_endpoints_to_sgsn(struct sgsn_mm_ctx *mm_ctx, stru
 {
 	struct sgsn_pdp_ctx *pdp;
 	llist_for_each_entry(pdp, &mm_ctx->pdp_list, list) {
+		if (!pdp->ggsn || !pdp->lib || pdp->state != PDP_STATE_CR_CONF)
+			continue;
 		pdpctx_change_gtpu_endpoint_to_sgsn(mm_ctx, pdp);
 		if (pdp != pdp_skip_gtp_upd_req)
 			gtp_update_context(pdp->ggsn->gsn, pdp->lib, pdp, &pdp->lib->hisaddr0);
@@ -76,6 +78,8 @@ static void mmctx_change_gtpu_endpoints_to_sgsn(struct sgsn_mm_ctx *mm_ctx, stru
 static void st_pmm_detached(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 {
 	switch(event) {
+	case E_PMM_PS_CONN_RELEASE:
+		break;
 	case E_PMM_PS_ATTACH:
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_CONNECTED);
 		break;
@@ -95,6 +99,8 @@ static void st_pmm_connected(struct osmo_fsm_inst *fi, uint32_t event, void *dat
 	struct sgsn_pdp_ctx *pctx;
 
 	switch(event) {
+	case E_PMM_PS_CONN_ESTABLISH:
+		break;
 	case E_PMM_PS_CONN_RELEASE:
 		sgsn_mm_ctx_iu_ranap_free(ctx);
 		mm_state_iu_fsm_state_chg(fi, ST_PMM_IDLE);
@@ -155,6 +161,7 @@ static struct osmo_fsm_state mm_state_iu_fsm_states[] = {
 	[ST_PMM_DETACHED] = {
 		.in_event_mask = X(E_PMM_PS_ATTACH) |
 				 X(E_PMM_PS_DETACH) |
+				 X(E_PMM_PS_CONN_RELEASE) |
 				 X(E_PMM_RX_GGSN_GTPU_DT_EI),
 		.out_state_mask = X(ST_PMM_CONNECTED),
 		.name = "Detached",
@@ -163,6 +170,7 @@ static struct osmo_fsm_state mm_state_iu_fsm_states[] = {
 	[ST_PMM_CONNECTED] = {
 		.in_event_mask =
 			X(E_PMM_PS_CONN_RELEASE) |
+			X(E_PMM_PS_CONN_ESTABLISH) |
 			X(E_PMM_RA_UPDATE) |
 			X(E_PMM_PS_DETACH) |
 			X(E_PMM_RX_GGSN_GTPU_DT_EI),
