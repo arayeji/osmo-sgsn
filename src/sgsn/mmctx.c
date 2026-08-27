@@ -104,7 +104,7 @@ void sgsn_mm_ctx_rehash_ptmsi(struct sgsn_mm_ctx *mm)
 void sgsn_mm_ctx_rehash_tlli(struct sgsn_mm_ctx *mm)
 {
 	hash_del(&mm->hlist_by_tlli);
-	if (mm->gb.tlli != TLLI_UNASSIGNED)
+	if (mm->gb.tlli != 0 && mm->gb.tlli != TLLI_UNASSIGNED)
 		hash_add(sgsn->mm_by_tlli, &mm->hlist_by_tlli, mm->gb.tlli);
 
 	hash_del(&mm->hlist_by_tlli_new);
@@ -113,18 +113,36 @@ void sgsn_mm_ctx_rehash_tlli(struct sgsn_mm_ctx *mm)
 			 mm->gb.tlli_new);
 }
 
+static void sgsn_mm_ctx_hash_remove(struct sgsn_mm_ctx *mm)
+{
+	hash_del(&mm->hlist_by_imsi);
+	hash_del(&mm->hlist_by_ptmsi);
+	hash_del(&mm->hlist_by_ptmsi_old);
+	hash_del(&mm->hlist_by_tlli);
+	hash_del(&mm->hlist_by_tlli_new);
+}
+
+static bool sgsn_mm_ctx_list_active(const struct sgsn_mm_ctx *mm)
+{
+	return !llist_empty(&mm->list);
+}
+
 static struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli_hash(uint32_t tlli,
 					const struct osmo_routing_area_id *raid)
 {
 	struct sgsn_mm_ctx *ctx;
 
 	hash_for_each_possible(sgsn->mm_by_tlli, ctx, hlist_by_tlli, tlli) {
+		if (!sgsn_mm_ctx_list_active(ctx))
+			continue;
 		if (!osmo_rai_cmp(raid, &ctx->ra) &&
 		    (tlli == ctx->gb.tlli || tlli == ctx->gb.tlli_new))
 			return ctx;
 	}
 
 	hash_for_each_possible(sgsn->mm_by_tlli_new, ctx, hlist_by_tlli_new, tlli) {
+		if (!sgsn_mm_ctx_list_active(ctx))
+			continue;
 		if (!osmo_rai_cmp(raid, &ctx->ra) &&
 		    (tlli == ctx->gb.tlli || tlli == ctx->gb.tlli_new))
 			return ctx;
@@ -221,11 +239,15 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_by_ptmsi(uint32_t p_tmsi)
 	struct sgsn_mm_ctx *ctx;
 
 	hash_for_each_possible(sgsn->mm_by_ptmsi, ctx, hlist_by_ptmsi, p_tmsi) {
+		if (!sgsn_mm_ctx_list_active(ctx))
+			continue;
 		if (p_tmsi == ctx->p_tmsi)
 			return ctx;
 	}
 
 	hash_for_each_possible(sgsn->mm_by_ptmsi_old, ctx, hlist_by_ptmsi_old, p_tmsi) {
+		if (!sgsn_mm_ctx_list_active(ctx))
+			continue;
 		if (ctx->p_tmsi_old && ctx->p_tmsi_old == p_tmsi)
 			return ctx;
 	}
@@ -243,6 +265,8 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_by_imsi(const char *imsi)
 
 	key = sgsn_imsi_hashkey(imsi);
 	hash_for_each_possible(sgsn->mm_by_imsi, ctx, hlist_by_imsi, key) {
+		if (!sgsn_mm_ctx_list_active(ctx))
+			continue;
 		if (!strcmp(imsi, ctx->imsi))
 			return ctx;
 	}
@@ -359,11 +383,7 @@ static void sgsn_mm_ctx_free(struct sgsn_mm_ctx *mm)
 	sgsn_mm_iu_unreachable_timer_stop(mm);
 #endif
 
-	hash_del(&mm->hlist_by_imsi);
-	hash_del(&mm->hlist_by_ptmsi);
-	hash_del(&mm->hlist_by_ptmsi_old);
-	hash_del(&mm->hlist_by_tlli);
-	hash_del(&mm->hlist_by_tlli_new);
+	sgsn_mm_ctx_hash_remove(mm);
 
 	/* Unlink from global list of MM contexts */
 	llist_del(&mm->list);
@@ -382,6 +402,9 @@ void sgsn_mm_ctx_cleanup_free(struct sgsn_mm_ctx *mm)
 	struct gprs_llc_llme *llme = NULL;
 	struct sgsn_pdp_ctx *pdp, *pdp2;
 	struct sgsn_signal_data sig_data;
+
+	/* Drop from lookup hashes before any nested code may run */
+	sgsn_mm_ctx_hash_remove(mm);
 
 	if (mm->ran_type == MM_CTX_T_GERAN_Gb)
 		llme = mm->gb.llme;
