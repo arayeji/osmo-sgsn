@@ -219,6 +219,30 @@ static unsigned api_gtp_queue_backlog(const struct gsn_t *gsn)
 	return (unsigned)diff;
 }
 
+static unsigned api_sgsn_pdp_count(void)
+{
+	unsigned count = 0;
+	struct sgsn_pdp_ctx *pdp;
+
+	if (!sgsn)
+		return 0;
+	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list)
+		count++;
+	return count;
+}
+
+static unsigned api_ggsn_pdp_count(const struct sgsn_ggsn_ctx *ggsn)
+{
+	unsigned count = 0;
+	struct sgsn_pdp_ctx *pdp;
+
+	if (!ggsn)
+		return 0;
+	llist_for_each_entry(pdp, &ggsn->pdp_list, ggsn_list)
+		count++;
+	return count;
+}
+
 static void api_timestamp_iso8601(char *buf, size_t buflen)
 {
 	time_t now = time(NULL);
@@ -318,7 +342,7 @@ static char *build_stats_json(void)
 		return NULL;
 
 	mm_count = llist_count(&sgsn->mm_list);
-	pdp_count = llist_count(&sgsn->pdp_list);
+	pdp_count = api_sgsn_pdp_count();
 
 	if (sgsn->gsn) {
 		gtp_backlog = api_gtp_queue_backlog(sgsn->gsn);
@@ -400,7 +424,7 @@ static char *build_stats_json(void)
 		json_escape(inet_ntoa(ggsn->remote_addr), esc, 512);
 		cur = json_append(cur, start, &space,
 				  "{\"id\":%u,\"remote_ip\":\"%s\",\"pdp_count\":%u}",
-				  ggsn->id, esc, llist_count(&ggsn->pdp_list));
+				  ggsn->id, esc, api_ggsn_pdp_count(ggsn));
 	}
 	cur = json_append(cur, start, &space, "],");
 
@@ -584,7 +608,7 @@ static char *build_pdp_list_json(void)
 	cur = start;
 	space = 256 * 1024;
 	cur = json_append(cur, start, &space, "{\"count\":%u,\"pdp_contexts\":[",
-			   llist_count(&sgsn->pdp_list));
+			   api_sgsn_pdp_count());
 
 	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list) {
 		const char *imsi = pdp->mm ? pdp->mm->imsi : "";
@@ -683,7 +707,7 @@ static char *build_links_json(void)
 		cur = json_append(cur, start, &space,
 				  "{\"id\":%u,\"remote_ip\":\"%s\",\"gtp_version\":%u,\"pdp_count\":%u,\"echo_interval\":%u}",
 				  ggsn->id, esc, ggsn->gtp_version,
-				  llist_count(&ggsn->pdp_list), ggsn->echo_interval);
+				  api_ggsn_pdp_count(ggsn), ggsn->echo_interval);
 	}
 	cur = json_append(cur, start, &space, "],");
 
