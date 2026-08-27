@@ -9,6 +9,7 @@
 #include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/gprs_ranap.h>
+#include <osmocom/sgsn/gprs_subscriber.h>
 #include <osmocom/sgsn/sgsn.h>
 
 #define X(s) (1 << (s))
@@ -171,6 +172,37 @@ static void st_auth_on_enter(struct osmo_fsm_inst *fi, uint32_t prev_state)
 	}
 }
 
+static bool attach_needs_update_location(const struct sgsn_mm_ctx *ctx)
+{
+	if (sgsn->cfg.auth_policy != SGSN_AUTH_POLICY_REMOTE)
+		return false;
+	if (!sgsn->cfg.require_update_location)
+		return false;
+	if (!ctx->subscr)
+		return true;
+	if (ctx->subscr->flags & GPRS_SUBSCRIBER_UPDATE_LOCATION_PENDING)
+		return true;
+	return !ctx->subscr->authorized;
+}
+
+static void attach_proceed_after_auth(struct osmo_fsm_inst *fi)
+{
+	struct sgsn_mm_ctx *ctx = fi->priv;
+
+#ifdef BUILD_IU
+	if (ctx->ran_type == MM_CTX_T_UTRAN_Iu && ctx->iu.ue_ctx &&
+	    !ctx->iu.ue_ctx->integrity_active) {
+		gmm_attach_fsm_state_chg(fi, ST_IU_SECURITY_CMD);
+		return;
+	}
+#endif
+	if (attach_needs_update_location(ctx)) {
+		gmm_attach_fsm_state_chg(fi, ST_ASK_VLR);
+		return;
+	}
+	gmm_attach_fsm_state_chg(fi, ST_ACCEPT);
+}
+
 static void st_auth(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 {
 	struct sgsn_mm_ctx *ctx = fi->priv;
@@ -178,12 +210,7 @@ static void st_auth(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	switch (event) {
 	case E_AUTH_RESP_RECV_SUCCESS:
 		sgsn_auth_request(ctx);
-#ifdef BUILD_IU
-		if (ctx->ran_type == MM_CTX_T_UTRAN_Iu && !ctx->iu.ue_ctx->integrity_active)
-			gmm_attach_fsm_state_chg(fi, ST_IU_SECURITY_CMD);
-		else
-#endif /* BUILD_IU */
-			gmm_attach_fsm_state_chg(fi, ST_ACCEPT);
+		attach_proceed_after_auth(fi);
 		break;
 	case E_AUTH_RESP_RECV_RESYNC:
 		if (ctx->gmm_att_req.auth_reattempt <= 1)
@@ -271,9 +298,14 @@ static void st_ask_vlr_on_enter(struct osmo_fsm_inst *fi, uint32_t prev_state)
 
 static void st_ask_vlr(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 {
+	struct sgsn_mm_ctx *ctx = fi->priv;
+
 	switch(event) {
 	case E_VLR_ANSWERED:
-		gmm_attach_fsm_state_chg(fi, ST_AUTH);
+		if (sgsn_mm_ctx_is_authenticated(ctx))
+			attach_proceed_after_auth(fi);
+		else
+			gmm_attach_fsm_state_chg(fi, ST_AUTH);
 		break;
 	}
 }
@@ -313,7 +345,7 @@ static void st_iu_security_cmd(struct osmo_fsm_inst *fi, uint32_t event, void *d
 		 */
 		break;
 	case E_IU_SECURITY_CMD_COMPLETE:
-		gmm_attach_fsm_state_chg(fi, ST_ACCEPT);
+		attach_proceed_after_auth(fi);
 		break;
 	}
 }
@@ -328,7 +360,7 @@ static struct osmo_fsm_state gmm_attach_req_fsm_states[] = {
 	},
 	[ST_ASK_VLR] = {
 		.in_event_mask = X(E_VLR_ANSWERED),
-		.out_state_mask = X(ST_INIT) | X(ST_AUTH) | X(ST_ACCEPT) | X(ST_REJECT),
+		.out_state_mask = X(ST_INIT) | X(ST_AUTH) | X(ST_IU_SECURITY_CMD) | X(ST_ACCEPT) | X(ST_REJECT) | X(ST_ASK_VLR),
 		.name = "AskVLR",
 		.onenter = st_ask_vlr_on_enter,
 		.action = st_ask_vlr,
@@ -349,7 +381,7 @@ static struct osmo_fsm_state gmm_attach_req_fsm_states[] = {
 	},
 	[ST_IU_SECURITY_CMD] = {
 		.in_event_mask = X(E_IU_SECURITY_CMD_COMPLETE) | X(E_VLR_ANSWERED),
-		.out_state_mask = X(ST_INIT) | X(ST_AUTH) | X(ST_ACCEPT) | X(ST_REJECT),
+		.out_state_mask = X(ST_INIT) | X(ST_AUTH) | X(ST_ACCEPT) | X(ST_REJECT) | X(ST_ASK_VLR),
 		.name = "IuSecurityCommand",
 		.onenter = st_iu_security_cmd_on_enter,
 		.action = st_iu_security_cmd,

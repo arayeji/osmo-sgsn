@@ -949,6 +949,15 @@ int gprs_subscr_request_update_location(struct sgsn_mm_ctx *mmctx)
 
 	rc = gprs_subscr_location_update(subscr, mmctx->ran_type);
 	gprs_subscr_put(subscr);
+
+	if (rc >= 0)
+		LOGMMCTXP(LOGL_NOTICE, mmctx,
+			  "GSUP UpdateLocation queued for IMSI %s\n", mmctx->imsi);
+	else
+		LOGMMCTXP(LOGL_ERROR, mmctx,
+			  "GSUP UpdateLocation failed for IMSI %s: %d\n",
+			  mmctx->imsi, rc);
+
 	return rc;
 }
 

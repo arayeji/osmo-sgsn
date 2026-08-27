@@ -174,9 +174,8 @@ int sgsn_auth_request(struct sgsn_mm_ctx *mmctx)
 
 	OSMO_ASSERT(mmctx->subscr != NULL);
 
-	if (sgsn->cfg.require_authentication) {
-		bool fresh_attach = !sgsn_mm_ctx_is_authenticated(mmctx) &&
-			mmctx->pending_req == GSM48_MT_GMM_ATTACH_REQ;
+	if (sgsn->cfg.require_authentication && !sgsn_mm_ctx_is_authenticated(mmctx)) {
+		bool fresh_attach = mmctx->pending_req == GSM48_MT_GMM_ATTACH_REQ;
 
 		/* Find next tuple; always query the HLR on a fresh attach. */
 		at = NULL;
@@ -198,7 +197,15 @@ int sgsn_auth_request(struct sgsn_mm_ctx *mmctx)
 		}
 
 		mmctx->auth_triplet = *at;
-	} else if (need_update_location) {
+	}
+
+	/* auth-policy remote: after vectors (or when auth is not required),
+	 * fetch HLR subscriber data / PDP APNs via Update Location.
+	 * Previously this was in `else if` after require_authentication, so
+	 * a successful attach never sent UL and PDP was rejected. */
+	if (need_update_location &&
+	    mmctx->subscr &&
+	    !(mmctx->subscr->flags & GPRS_SUBSCRIBER_UPDATE_LOCATION_PENDING)) {
 		LOGMMCTXP(LOGL_INFO, mmctx,
 			  "Missing information, requesting subscriber data\n");
 		rc = gprs_subscr_request_update_location(mmctx);
