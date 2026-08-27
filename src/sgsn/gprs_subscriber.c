@@ -200,12 +200,20 @@ static int gprs_subscr_tx_gsup_message(struct gprs_subscr *subscr,
 				       struct osmo_gsup_message *gsup_msg)
 {
 	struct msgb *msg = osmo_gsup_client_msgb_alloc();
+	int rc;
 
 	if (strlen(gsup_msg->imsi) == 0 && subscr)
 		osmo_strlcpy(gsup_msg->imsi, subscr->imsi,
 			     sizeof(gsup_msg->imsi));
 	gsup_msg->cn_domain = OSMO_GSUP_CN_DOMAIN_PS;
-	osmo_gsup_encode(msg, gsup_msg);
+	rc = osmo_gsup_encode(msg, gsup_msg);
+	if (rc) {
+		LOGGSUBSCRP(LOGL_ERROR, subscr,
+			    "GSUP encode failed (%d) for message type 0x%02x\n",
+			    rc, gsup_msg->message_type);
+		msgb_free(msg);
+		return rc;
+	}
 
 	LOGGSUBSCRP(LOGL_INFO, subscr,
 		    "Sending GSUP, will send: %s\n", msgb_hexdump(msg));
@@ -215,7 +223,15 @@ static int gprs_subscr_tx_gsup_message(struct gprs_subscr *subscr,
 		return -ENOTSUP;
 	}
 
-	return osmo_gsup_client_send(sgsn->gsup_client, msg);
+	rc = osmo_gsup_client_send(sgsn->gsup_client, msg);
+	if (rc < 0) {
+		LOGGSUBSCRP(LOGL_ERROR, subscr,
+			    "GSUP send failed (%d) for message type 0x%02x\n",
+			    rc, gsup_msg->message_type);
+		return rc;
+	}
+
+	return 0;
 }
 
 static int gprs_subscr_tx_gsup_error_reply(struct gprs_subscr *subscr,
@@ -893,10 +909,29 @@ struct gprs_subscr *gprs_subscr_get_or_create_by_mmctx(struct sgsn_mm_ctx *mmctx
 	if (subscr->lac != mmctx->ra.lac.lac)
 		subscr->lac = mmctx->ra.lac.lac;
 
+	if (mmctx->imsi[0])
+		osmo_strlcpy(subscr->imsi, mmctx->imsi, sizeof(subscr->imsi));
+
 	subscr->sgsn_data->mm = mmctx;
 	mmctx->subscr = gprs_subscr_get(subscr);
 
 	return subscr;
+}
+
+void gprs_subscr_reset_auth_triplets(struct gprs_subscr *subscr)
+{
+	unsigned idx;
+	struct sgsn_subscriber_data *sdata;
+
+	if (!subscr || !subscr->sgsn_data)
+		return;
+
+	sdata = subscr->sgsn_data;
+	memset(sdata->auth_triplets, 0, sizeof(sdata->auth_triplets));
+	for (idx = 0; idx < ARRAY_SIZE(sdata->auth_triplets); idx++)
+		sdata->auth_triplets[idx].key_seq = GSM_KEY_SEQ_INVAL;
+	sdata->auth_triplets_updated = 0;
+	subscr->flags &= ~GPRS_SUBSCRIBER_UPDATE_AUTH_INFO_PENDING;
 }
 
 int gprs_subscr_request_update_location(struct sgsn_mm_ctx *mmctx)
@@ -940,7 +975,19 @@ int gprs_subscr_request_auth_info(struct sgsn_mm_ctx *mmctx,
 	subscr->flags |= GPRS_SUBSCRIBER_UPDATE_AUTH_INFO_PENDING;
 
 	rc = gprs_subscr_query_auth_info(subscr, auts, auts_rand);
+	if (rc < 0)
+		subscr->flags &= ~GPRS_SUBSCRIBER_UPDATE_AUTH_INFO_PENDING;
+
 	gprs_subscr_put(subscr);
+
+	if (rc >= 0)
+		LOGMMCTXP(LOGL_ERROR, mmctx,
+			  "GSUP SendAuthInfo queued for IMSI %s\n", mmctx->imsi);
+	else
+		LOGMMCTXP(LOGL_ERROR, mmctx,
+			  "GSUP SendAuthInfo failed for IMSI %s: %d\n",
+			  mmctx->imsi, rc);
+
 	return rc;
 }
 

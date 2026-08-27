@@ -175,16 +175,21 @@ int sgsn_auth_request(struct sgsn_mm_ctx *mmctx)
 	OSMO_ASSERT(mmctx->subscr != NULL);
 
 	if (sgsn->cfg.require_authentication) {
-		/* Find next tuple */
-		at = sgsn_auth_get_tuple(mmctx, mmctx->auth_triplet.key_seq);
+		bool fresh_attach = !sgsn_mm_ctx_is_authenticated(mmctx) &&
+			mmctx->pending_req == GSM48_MT_GMM_ATTACH_REQ;
+
+		/* Find next tuple; always query the HLR on a fresh attach. */
+		at = NULL;
+		if (!fresh_attach)
+			at = sgsn_auth_get_tuple(mmctx, mmctx->auth_triplet.key_seq);
 
 		if (!at) {
 			/* No valid tuple found, request fresh ones.  A stale sec_ctx
 			 * from a prior attempt must not suppress this GSUP query. */
 			mmctx->sec_ctx = OSMO_AUTH_TYPE_NONE;
 			mmctx->auth_triplet.key_seq = GSM_KEY_SEQ_INVAL;
-			LOGMMCTXP(LOGL_INFO, mmctx,
-				  "Requesting authentication tuples\n");
+			if (fresh_attach && mmctx->subscr)
+				gprs_subscr_reset_auth_triplets(mmctx->subscr);
 			rc = gprs_subscr_request_auth_info(mmctx, NULL, NULL);
 			if (rc >= 0)
 				return 0;
@@ -234,6 +239,13 @@ void sgsn_auth_update(struct sgsn_mm_ctx *mmctx)
 		 * because new auth tuples have been received */
 		at = sgsn_auth_get_tuple(mmctx, mmctx->auth_triplet.key_seq);
 		if (!at) {
+			if (sgsn->cfg.auth_policy == SGSN_AUTH_POLICY_REMOTE &&
+			    sgsn->cfg.require_authentication && subscr &&
+			    !(subscr->flags & GPRS_SUBSCRIBER_UPDATE_AUTH_INFO_PENDING)) {
+				mmctx->sec_ctx = OSMO_AUTH_TYPE_NONE;
+				if (gprs_subscr_request_auth_info(mmctx, NULL, NULL) >= 0)
+					return;
+			}
 			LOGMMCTXP(LOGL_ERROR, mmctx,
 				  "Missing auth tuples, authorization not possible\n");
 			auth_state = SGSN_AUTH_REJECTED;

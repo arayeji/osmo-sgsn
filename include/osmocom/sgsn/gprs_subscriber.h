@@ -102,6 +102,7 @@ struct gprs_subscr *gprs_subscr_get_by_imsi(const char *imsi);
 void gprs_subscr_cancel(struct gprs_subscr *subscr);
 void gprs_subscr_update(struct gprs_subscr *subscr);
 void gprs_subscr_update_auth_info(struct gprs_subscr *subscr);
+void gprs_subscr_reset_auth_triplets(struct gprs_subscr *subscr);
 int gprs_subscr_rx_gsup_message(struct msgb *msg);
 
 #define LOGGSUBSCRP(level, subscr, fmt, args...) \
