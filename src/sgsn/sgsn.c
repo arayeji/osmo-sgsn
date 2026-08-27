@@ -218,7 +218,7 @@ struct sgsn_instance *sgsn_instance_alloc(void *talloc_ctx)
 	INIT_LLIST_HEAD(&inst->pdp_list);
 #if BUILD_IU
 	INIT_LLIST_HEAD(&inst->rnc_list);
-	inst->cfg.iu.iu_release_pdp = SGSN_IU_RELEASE_PDP_DELETE_GN;
+	inst->cfg.iu.iu_release_pdp = SGSN_IU_RELEASE_PDP_IDLE_UPDATE;
 	inst->cfg.iu.rnc_loss_pdp = SGSN_RNC_LOSS_PDP_DELETE_GN;
 	inst->cfg.iu.unreachable_pdp_timer_sec = 0;
 #endif /* #if BUILD_IU */
