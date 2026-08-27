@@ -354,10 +354,20 @@ static void gprs_subscr_gsup_insert_data(struct gprs_subscr *subscr,
 		sdata->has_pdp_charg = 0;
 	}
 
-	if (gsup_msg->pdp_info_compl) {
+	/* IWF/HLR often send APNs in INSERT DATA, then a UL Result with
+	 * pdp_info_compl set and zero PDP IEs. Clearing here would drop
+	 * internet/mahtab and reject later PDP Activate. */
+	if (gsup_msg->pdp_info_compl &&
+	    (gsup_msg->num_pdp_infos > 0 ||
+	     gsup_msg->message_type != OSMO_GSUP_MSGT_UPDATE_LOCATION_RESULT)) {
 		rc = gprs_subscr_pdp_data_clear(subscr);
 		if (rc > 0)
 			LOGP(DGPRS, LOGL_INFO, "Cleared existing PDP info\n");
+	} else if (gsup_msg->pdp_info_compl &&
+		   gsup_msg->num_pdp_infos == 0 &&
+		   gsup_msg->message_type == OSMO_GSUP_MSGT_UPDATE_LOCATION_RESULT) {
+		LOGGSUBSCRP(LOGL_NOTICE, subscr,
+			    "UL Result has PDP-complete with no PDP IEs, keeping existing APNs\n");
 	}
 
 	for (idx = 0; idx < gsup_msg->num_pdp_infos; idx++) {
