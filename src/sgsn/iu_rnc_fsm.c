@@ -181,9 +181,9 @@ static void iu_rnc_st_wait_rx_reset_ack(struct osmo_fsm_inst *fi, uint32_t event
 		ev_msg_up_co_initial_ctx = data;
 		OSMO_ASSERT(ev_msg_up_co_initial_ctx);
 		LOG_RNC(rnc, LOGL_ERROR, "Receiving CO Initial message on RAN peer that has not done a proper RESET yet."
-			     " Disconnecting on incoming message, sending RESET to RAN peer.\n");
-		osmo_sccp_tx_disconn(ev_msg_up_co_initial_ctx->rnc->scu_iups->scu,
-				     ev_msg_up_co_initial_ctx->conn_id, NULL, 0);
+			     " Sending RESET to RAN peer.\n");
+		/* Do not osmo_sccp_tx_disconn() here: libosmo-sccp aborts if
+		 * conn_id is already gone after an SGSN restart. */
 		/* No valid RESET procedure has happened here yet. */
 		iu_rnc_reset(rnc);
 		return;

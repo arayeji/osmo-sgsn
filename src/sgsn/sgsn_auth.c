@@ -112,6 +112,14 @@ enum sgsn_auth_state sgsn_auth_state(struct sgsn_mm_ctx *mmctx)
 		if (mmctx->subscr->flags & GPRS_SUBSCRIBER_UPDATE_PENDING_MASK)
 			return mmctx->auth_state;
 
+		/* HLR already denied this IMSI (e.g. unknown). Do not keep
+		 * asking for vectors — that re-queues SendAuthInfo forever
+		 * and aborts the attach FSM under load. */
+		if (mmctx->subscr->sgsn_data &&
+		    mmctx->subscr->sgsn_data->error_cause != SGSN_ERROR_CAUSE_NONE &&
+		    !mmctx->subscr->authorized)
+			return SGSN_AUTH_REJECTED;
+
 		if (sgsn->cfg.require_authentication &&
 		    (!sgsn_mm_ctx_is_authenticated(mmctx) ||
 		     mmctx->subscr->sgsn_data->auth_triplets_updated))
@@ -173,6 +181,13 @@ int sgsn_auth_request(struct sgsn_mm_ctx *mmctx)
 	gprs_subscr_put(subscr);
 
 	OSMO_ASSERT(mmctx->subscr != NULL);
+
+	if (mmctx->subscr->sgsn_data &&
+	    mmctx->subscr->sgsn_data->error_cause != SGSN_ERROR_CAUSE_NONE &&
+	    !mmctx->subscr->authorized) {
+		sgsn_auth_update(mmctx);
+		return 0;
+	}
 
 	if (sgsn->cfg.require_authentication && !sgsn_mm_ctx_is_authenticated(mmctx)) {
 		bool fresh_attach = mmctx->pending_req == GSM48_MT_GMM_ATTACH_REQ;
@@ -248,7 +263,9 @@ void sgsn_auth_update(struct sgsn_mm_ctx *mmctx)
 		if (!at) {
 			if (sgsn->cfg.auth_policy == SGSN_AUTH_POLICY_REMOTE &&
 			    sgsn->cfg.require_authentication && subscr &&
-			    !(subscr->flags & GPRS_SUBSCRIBER_UPDATE_AUTH_INFO_PENDING)) {
+			    !(subscr->flags & GPRS_SUBSCRIBER_UPDATE_AUTH_INFO_PENDING) &&
+			    subscr->sgsn_data &&
+			    subscr->sgsn_data->error_cause == SGSN_ERROR_CAUSE_NONE) {
 				mmctx->sec_ctx = OSMO_AUTH_TYPE_NONE;
 				if (gprs_subscr_request_auth_info(mmctx, NULL, NULL) >= 0)
 					return;

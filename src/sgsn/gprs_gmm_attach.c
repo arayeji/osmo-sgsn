@@ -192,7 +192,8 @@ static void attach_proceed_after_auth(struct osmo_fsm_inst *fi)
 #ifdef BUILD_IU
 	if (ctx->ran_type == MM_CTX_T_UTRAN_Iu && ctx->iu.ue_ctx &&
 	    !ctx->iu.ue_ctx->integrity_active) {
-		gmm_attach_fsm_state_chg(fi, ST_IU_SECURITY_CMD);
+		if (fi->state != ST_IU_SECURITY_CMD)
+			gmm_attach_fsm_state_chg(fi, ST_IU_SECURITY_CMD);
 		return;
 	}
 #endif
@@ -211,6 +212,10 @@ static void st_auth(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	case E_AUTH_RESP_RECV_SUCCESS:
 		sgsn_auth_request(ctx);
 		attach_proceed_after_auth(fi);
+		break;
+	case E_VLR_ANSWERED:
+		if (sgsn_mm_ctx_is_authenticated(ctx))
+			attach_proceed_after_auth(fi);
 		break;
 	case E_AUTH_RESP_RECV_RESYNC:
 		if (ctx->gmm_att_req.auth_reattempt <= 1)
@@ -373,7 +378,7 @@ static struct osmo_fsm_state gmm_attach_req_fsm_states[] = {
 		.action = st_identity,
 	},
 	[ST_AUTH] = {
-		.in_event_mask = X(E_AUTH_RESP_RECV_SUCCESS) | X(E_AUTH_RESP_RECV_RESYNC),
+		.in_event_mask = X(E_AUTH_RESP_RECV_SUCCESS) | X(E_AUTH_RESP_RECV_RESYNC) | X(E_VLR_ANSWERED),
 		.out_state_mask = X(ST_INIT) | X(ST_AUTH) | X(ST_IU_SECURITY_CMD) | X(ST_ACCEPT) | X(ST_ASK_VLR) | X(ST_REJECT),
 		.name = "Authenticate",
 		.onenter = st_auth_on_enter,
@@ -381,7 +386,7 @@ static struct osmo_fsm_state gmm_attach_req_fsm_states[] = {
 	},
 	[ST_IU_SECURITY_CMD] = {
 		.in_event_mask = X(E_IU_SECURITY_CMD_COMPLETE) | X(E_VLR_ANSWERED),
-		.out_state_mask = X(ST_INIT) | X(ST_AUTH) | X(ST_ACCEPT) | X(ST_REJECT) | X(ST_ASK_VLR),
+		.out_state_mask = X(ST_INIT) | X(ST_AUTH) | X(ST_ACCEPT) | X(ST_REJECT) | X(ST_ASK_VLR) | X(ST_IU_SECURITY_CMD),
 		.name = "IuSecurityCommand",
 		.onenter = st_iu_security_cmd_on_enter,
 		.action = st_iu_security_cmd,
