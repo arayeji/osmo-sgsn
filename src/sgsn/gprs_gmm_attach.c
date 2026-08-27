@@ -458,6 +458,13 @@ void gmm_attach_allstate_action(struct osmo_fsm_inst *fi, uint32_t event, void *
 			osmo_fsm_inst_state_chg(fi, ST_REJECT, 0, 0);
 		st_reject(fi, event, data);
 		break;
+	case E_AUTH_RESP_RECV_RESYNC:
+		/* AUTS can arrive while still in CheckIdentity / IuSecurity. */
+		if (ctx->gmm_att_req.auth_reattempt <= 1)
+			gmm_attach_fsm_state_chg(fi, ST_ASK_VLR);
+		else
+			osmo_fsm_inst_dispatch(fi, E_REJECT, (void *) GMM_CAUSE_SYNC_FAIL);
+		break;
 	}
 }
 
@@ -519,7 +526,7 @@ struct osmo_fsm gmm_attach_req_fsm = {
 	.states = gmm_attach_req_fsm_states,
 	.num_states = ARRAY_SIZE(gmm_attach_req_fsm_states),
 	.event_names = gmm_attach_req_fsm_event_names,
-	.allstate_event_mask = X(E_REJECT) | X(E_ATTACH_REQ_RECV),
+	.allstate_event_mask = X(E_REJECT) | X(E_ATTACH_REQ_RECV) | X(E_AUTH_RESP_RECV_RESYNC),
 	.allstate_action = gmm_attach_allstate_action,
 	.cleanup = gmm_attach_fsm_cleanup,
 	.log_subsys = DMM,

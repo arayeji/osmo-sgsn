@@ -776,8 +776,11 @@ static int gsm48_rx_gmm_auth_ciph_fail(struct sgsn_mm_ctx *ctx,
 		/* Send AUTS to HLR and wait for new Auth Info Result */
 		rc = gprs_subscr_request_auth_info(ctx, auts,
 						   ctx->auth_triplet.vec.rand);
-		if (!rc)
+		if (!rc) {
+			if (!ctx->gmm_att_req.fsm)
+				return 0;
 			return osmo_fsm_inst_dispatch(ctx->gmm_att_req.fsm, E_AUTH_RESP_RECV_RESYNC, NULL);
+		}
 		/* on error, fall through to send a reject */
 		LOGMMCTXP(LOGL_ERROR, ctx,
 			  "Sending AUTS to HLR failed (rc = %d)\n", rc);
@@ -2176,6 +2179,8 @@ int gsm0408_rcv_gmm(struct sgsn_mm_ctx *mmctx, struct msgb *msg,
 		rc = gsm48_rx_gmm_auth_ciph_resp(mmctx, msg);
 		break;
 	case GSM48_MT_GMM_AUTH_CIPH_FAIL:
+		if (!mmctx)
+			goto null_mmctx;
 		rc = gsm48_rx_gmm_auth_ciph_fail(mmctx, msg);
 		break;
 	default:
