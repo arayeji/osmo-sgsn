@@ -44,6 +44,85 @@
 #include <osmocom/sgsn/sccp.h>
 #include <osmocom/sgsn/sgsn.h>
 #include <osmocom/sgsn/sgsn_pdp_gn.h>
+#include <osmocom/sgsn/iu_rnc_fsm.h>
+
+#define IU_RNC_API_MAX 16
+
+static struct iu_rnc_api_entry iu_rnc_api_cache[IU_RNC_API_MAX];
+
+static int iu_rnc_api_slot_for(const struct osmo_rnc_id *id)
+{
+	int i;
+
+	for (i = 0; i < IU_RNC_API_MAX; i++) {
+		if (iu_rnc_api_cache[i].valid && !osmo_rnc_id_cmp(&iu_rnc_api_cache[i].rnc_id, id))
+			return i;
+	}
+	for (i = 0; i < IU_RNC_API_MAX; i++) {
+		if (!iu_rnc_api_cache[i].valid)
+			return i;
+	}
+	return 0;
+}
+
+void iu_rnc_api_sync(struct ranap_iu_rnc *rnc)
+{
+	struct iu_rnc_api_entry *e;
+	int slot;
+
+	if (!rnc || !rnc->fi || rnc->fi->priv != rnc)
+		return;
+
+	slot = iu_rnc_api_slot_for(&rnc->rnc_id);
+	e = &iu_rnc_api_cache[slot];
+	e->valid = true;
+	e->rnc_id = rnc->rnc_id;
+	e->sccp_addr = rnc->sccp_addr;
+	e->state = rnc->fi->state;
+}
+
+void iu_rnc_api_invalidate(struct ranap_iu_rnc *rnc)
+{
+	int i;
+
+	if (!rnc)
+		return;
+	for (i = 0; i < IU_RNC_API_MAX; i++) {
+		if (iu_rnc_api_cache[i].valid &&
+		    !osmo_rnc_id_cmp(&iu_rnc_api_cache[i].rnc_id, &rnc->rnc_id))
+			iu_rnc_api_cache[i].valid = false;
+	}
+}
+
+unsigned iu_rnc_api_count(void)
+{
+	unsigned n = 0;
+	int i;
+
+	for (i = 0; i < IU_RNC_API_MAX; i++) {
+		if (iu_rnc_api_cache[i].valid)
+			n++;
+	}
+	return n;
+}
+
+bool iu_rnc_api_get(unsigned idx, struct iu_rnc_api_entry *out)
+{
+	unsigned n = 0;
+	int i;
+
+	if (!out)
+		return false;
+	for (i = 0; i < IU_RNC_API_MAX; i++) {
+		if (!iu_rnc_api_cache[i].valid)
+			continue;
+		if (n++ == idx) {
+			*out = iu_rnc_api_cache[i];
+			return true;
+		}
+	}
+	return false;
+}
 
 static struct ranap_iu_rnc *iu_rnc_alloc(const struct osmo_rnc_id *rnc_id,
 					 struct sgsn_sccp_user_iups *scu_iups,
@@ -82,6 +161,7 @@ static struct ranap_iu_rnc *iu_rnc_alloc(const struct osmo_rnc_id *rnc_id,
 	LOGP(DRANAP, LOGL_NOTICE, "New RNC %s at %s\n",
 	     osmo_rnc_id_name(&rnc->rnc_id), osmo_sccp_addr_dump(rnc_sccp_addr));
 
+	iu_rnc_api_sync(rnc);
 	return rnc;
 }
 
@@ -124,10 +204,13 @@ struct ranap_iu_rnc *iu_rnc_find_or_create(const struct osmo_rnc_id *rnc_id,
 			LOGP(DRANAP, LOGL_NOTICE, "RNC %s changed its SCCP addr to %s\n",
 			     osmo_rnc_id_name(&rnc->rnc_id), osmo_sccp_addr_dump(addr));
 			rnc->sccp_addr = *addr;
+			iu_rnc_api_sync(rnc);
 		}
 	} else {
 		rnc = iu_rnc_alloc(rnc_id, scu_iups, addr);
 	}
+	if (rnc->fi)
+		iu_rnc_api_sync(rnc);
 	return rnc;
 }
 

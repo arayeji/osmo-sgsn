@@ -50,7 +50,10 @@ static const struct osmo_tdef_state_timeout iu_rnc_fsm_timeouts[32] = {
 };
 
 #define iu_rnc_state_chg(iu_rnc, next_st) \
-	osmo_tdef_fsm_inst_state_chg((iu_rnc)->fi, next_st, iu_rnc_fsm_timeouts, sgsn_T_defs, 5)
+	do { \
+		osmo_tdef_fsm_inst_state_chg((iu_rnc)->fi, next_st, iu_rnc_fsm_timeouts, sgsn_T_defs, 5); \
+		iu_rnc_api_sync(iu_rnc); \
+	} while (0)
 
 static const struct value_string iu_rnc_fsm_event_names[] = {
 	OSMO_VALUE_STRING(IU_RNC_EV_MSG_UP_CO_INITIAL),
@@ -295,6 +298,7 @@ static void iu_rnc_fsm_cleanup(struct osmo_fsm_inst *fi, enum osmo_fsm_term_caus
 	if (rnc->fi->state == IU_RNC_ST_READY)
 		sgsn_stat_dec(SGSN_STAT_IU_PEERS_ACTIVE, 1);
 	sgsn_stat_dec(SGSN_STAT_IU_PEERS_TOTAL, 1);
+	iu_rnc_api_invalidate(rnc);
 	rnc->fi = NULL;
 }
 

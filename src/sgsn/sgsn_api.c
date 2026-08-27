@@ -94,32 +94,11 @@ static void json_escape(const char *in, char *out, size_t out_len)
 }
 
 #if BUILD_IU
-/* PrettyNMS polls /v1/links and /v1/stats. Skip corrupt/stale RNC objects
- * instead of calling osmo_sccp_addr_dump() / walking bad list nodes. */
-static bool api_iu_rnc_usable(const struct ranap_iu_rnc *rnc)
-{
-	if (!rnc || !rnc->scu_iups)
-		return false;
-	if (!rnc->fi)
-		return false;
-	if (talloc_parent(rnc->fi) != rnc)
-		return false;
-	if (rnc->fi->priv != rnc)
-		return false;
-	if (rnc->fi->fsm != &iu_rnc_fsm)
-		return false;
-	return true;
-}
-
-static void api_fmt_iu_rnc_state(const struct ranap_iu_rnc *rnc, char *out, size_t out_len)
+static void api_fmt_iu_rnc_state_cached(int state, char *out, size_t out_len)
 {
 	if (!out || !out_len)
 		return;
-	if (!api_iu_rnc_usable(rnc)) {
-		out[0] = '\0';
-		return;
-	}
-	switch (rnc->fi->state) {
+	switch (state) {
 	case IU_RNC_ST_READY:
 		snprintf(out, out_len, "READY");
 		break;
@@ -233,36 +212,6 @@ static unsigned api_gtp_queue_backlog(const struct gsn_t *gsn)
 	return (unsigned)diff;
 }
 
-static unsigned api_sgsn_pdp_count(void)
-{
-	unsigned count = 0;
-	struct sgsn_pdp_ctx *pdp;
-
-	if (!sgsn)
-		return 0;
-	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list) {
-		count++;
-		if (count >= 65535)
-			break;
-	}
-	return count;
-}
-
-static unsigned api_ggsn_pdp_count(const struct sgsn_ggsn_ctx *ggsn)
-{
-	unsigned count = 0;
-	struct sgsn_pdp_ctx *pdp;
-
-	if (!ggsn)
-		return 0;
-	llist_for_each_entry(pdp, &ggsn->pdp_list, ggsn_list) {
-		count++;
-		if (count >= 65535)
-			break;
-	}
-	return count;
-}
-
 static void api_timestamp_iso8601(char *buf, size_t buflen)
 {
 	time_t now = time(NULL);
@@ -347,7 +296,7 @@ static char *build_stats_json(void)
 		return NULL;
 
 	mm_count = llist_count(&sgsn->mm_list);
-	pdp_count = api_sgsn_pdp_count();
+	pdp_count = llist_count(&sgsn->pdp_list);
 
 	if (sgsn->rate_ctrs) {
 		attach_req = api_ctr_current(sgsn->rate_ctrs, "gprs:attach_requested");
@@ -470,119 +419,19 @@ static char *build_mm_json(const struct sgsn_mm_ctx *mm, bool include_pdp)
 
 static char *build_counts_json(void)
 {
-	unsigned mm_count = 0, pdp_count = 0, active_pdp = 0;
-	struct sgsn_mm_ctx *mm;
-	struct sgsn_pdp_ctx *pdp;
+	unsigned mm_count = 0, pdp_count = 0;
 	char *json;
 
-	llist_for_each_entry(mm, &sgsn->mm_list, list)
-		mm_count++;
-	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list)
-		pdp_count++;
-	llist_for_each_entry(mm, &sgsn->mm_list, list)
-		active_pdp += llist_count(&mm->pdp_list);
+	if (!sgsn)
+		return NULL;
+
+	mm_count = llist_count(&sgsn->mm_list);
+	pdp_count = llist_count(&sgsn->pdp_list);
 
 	json = talloc_asprintf(g_api_ctx,
 			       "{\"mm_context_count\":%u,\"pdp_context_count\":%u,\"active_pdp_count\":%u}",
-			       mm_count, pdp_count, active_pdp);
+			       mm_count, pdp_count, pdp_count);
 	return json;
-}
-
-static char *build_mm_list_json(bool include_pdp)
-{
-	char *start, *cur, *entry;
-	size_t space;
-	unsigned total = 0, emitted = 0;
-	struct sgsn_mm_ctx *mm;
-	bool first = true;
-
-#define API_MM_LIST_MAX 64
-
-	llist_for_each_entry(mm, &sgsn->mm_list, list)
-		total++;
-
-	start = talloc_zero_size(g_api_ctx, 512 * 1024);
-	if (!start)
-		return NULL;
-	cur = start;
-	space = 512 * 1024;
-	cur = json_append(cur, start, &space,
-			 "{\"count\":%u,\"truncated\":%s,\"mm_contexts\":[",
-			 total, total > API_MM_LIST_MAX ? "true" : "false");
-
-	llist_for_each_entry(mm, &sgsn->mm_list, list) {
-		if (!mm->imsi[0])
-			continue;
-		if (emitted >= API_MM_LIST_MAX)
-			break;
-		if (!first)
-			cur = json_append(cur, start, &space, ",");
-		first = false;
-		emitted++;
-		entry = build_mm_json(mm, include_pdp);
-		if (!entry)
-			continue;
-		cur = json_append(cur, start, &space, "%s", entry);
-		talloc_free(entry);
-		if (space < 4096)
-			break;
-	}
-	cur = json_append(cur, start, &space, "]}");
-	return start;
-}
-
-static char *build_pdp_list_json(void)
-{
-	char *start, *cur;
-	size_t space;
-	char esc[256];
-	char addr[INET6_ADDRSTRLEN + 8];
-	char apnbuf[APN_MAXLEN + 1];
-	struct sgsn_pdp_ctx *pdp;
-	unsigned total = 0, emitted = 0;
-	bool first = true;
-
-#define API_PDP_LIST_MAX 128
-
-	total = api_sgsn_pdp_count();
-
-	start = talloc_zero_size(g_api_ctx, 512 * 1024);
-	if (!start)
-		return NULL;
-	cur = start;
-	space = 512 * 1024;
-	cur = json_append(cur, start, &space,
-			 "{\"count\":%u,\"truncated\":%s,\"pdp_contexts\":[",
-			 total, total > API_PDP_LIST_MAX ? "true" : "false");
-
-	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list) {
-		const char *imsi = (pdp->mm && pdp->mm->imsi[0]) ? pdp->mm->imsi : "";
-
-		if (emitted >= API_PDP_LIST_MAX)
-			break;
-		if (!first)
-			cur = json_append(cur, start, &space, ",");
-		first = false;
-		emitted++;
-
-		json_escape(imsi, esc, sizeof(esc));
-		cur = json_append(cur, start, &space, "{\"imsi\":\"%s\",\"nsapi\":%u,\"sapi\":%u,\"ti\":%u,",
-				  esc, pdp->nsapi, pdp->sapi, pdp->ti);
-		if (pdp->lib) {
-			osmo_apn_to_str(apnbuf, pdp->lib->apn_use.v, pdp->lib->apn_use.l);
-			json_escape(apnbuf, esc, sizeof(esc));
-			cur = json_append(cur, start, &space, "\"apn\":\"%s\",", esc);
-			pdp_addr_str(pdp->lib->eua.v, pdp->lib->eua.l, addr, sizeof(addr));
-			json_escape(addr, esc, sizeof(esc));
-			cur = json_append(cur, start, &space, "\"pdp_address\":\"%s\"}", esc);
-		} else {
-			cur = json_append(cur, start, &space, "\"apn\":\"\",\"pdp_address\":\"\"}");
-		}
-		if (space < 4096)
-			break;
-	}
-	cur = json_append(cur, start, &space, "]}");
-	return start;
 }
 
 static char *build_links_json(void)
@@ -593,7 +442,8 @@ static char *build_links_json(void)
 	struct sgsn_ggsn_ctx *ggsn;
 	struct sgsn_mme_ctx *mme;
 #if BUILD_IU
-	struct ranap_iu_rnc *rnc;
+	unsigned iu_idx;
+	struct iu_rnc_api_entry iu_ent;
 #endif
 
 	start = talloc_zero_size(g_api_ctx, 512 * 1024);
@@ -655,9 +505,8 @@ static char *build_links_json(void)
 		first = false;
 		json_escape(inet_ntoa(ggsn->remote_addr), esc, 512);
 		cur = json_append(cur, start, &space,
-				  "{\"id\":%u,\"remote_ip\":\"%s\",\"gtp_version\":%u,\"pdp_count\":%u,\"echo_interval\":%u}",
-				  ggsn->id, esc, ggsn->gtp_version,
-				  api_ggsn_pdp_count(ggsn), ggsn->echo_interval);
+				  "{\"id\":%u,\"remote_ip\":\"%s\",\"gtp_version\":%u,\"pdp_count\":0,\"echo_interval\":%u}",
+				  ggsn->id, esc, ggsn->gtp_version, ggsn->echo_interval);
 	}
 	cur = json_append(cur, start, &space, "],");
 
@@ -695,21 +544,21 @@ static char *build_links_json(void)
 	}
 
 #if BUILD_IU
-	/* Same safe walk as /v1/stats. */
+	/* Cached snapshot — never walk sgsn->rnc_list from HTTP handlers. */
 	cur = json_append(cur, start, &space, "],\"iu_rnc\":[");
 	first = true;
-	llist_for_each_entry(rnc, &sgsn->rnc_list, entry) {
-		if (!api_iu_rnc_usable(rnc))
-			continue;
+	for (iu_idx = 0; iu_idx < iu_rnc_api_count(); iu_idx++) {
+		if (!iu_rnc_api_get(iu_idx, &iu_ent))
+			break;
 
 		if (!first)
 			cur = json_append(cur, start, &space, ",");
 		first = false;
-		api_fmt_rnc_id(&rnc->rnc_id, esc, 512);
+		api_fmt_rnc_id(&iu_ent.rnc_id, esc, 512);
 		cur = json_append(cur, start, &space, "{\"rnc_id\":\"%s\",", esc);
-		api_fmt_sccp_pc(&rnc->sccp_addr, esc, 512);
+		api_fmt_sccp_pc(&iu_ent.sccp_addr, esc, 512);
 		cur = json_append(cur, start, &space, "\"sccp_addr\":\"%s\",", esc);
-		api_fmt_iu_rnc_state(rnc, esc, 512);
+		api_fmt_iu_rnc_state_cached(iu_ent.state, esc, 512);
 		cur = json_append(cur, start, &space,
 				  "\"state\":\"%s\"}",
 				  esc);
@@ -1145,13 +994,11 @@ static void handle_request(struct api_conn *ac, const char *req)
 		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 			 "application/json", body ? body : "{\"error\":\"oom\"}");
 	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/mm")) {
-		body = build_mm_list_json(true);
-		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
-			 "application/json", body ? body : "{\"error\":\"oom\"}");
+		api_send(ac, 503, "Service Unavailable", "application/json",
+			 "{\"error\":\"disabled for stability; use /v1/contexts/counts\"}");
 	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/pdp")) {
-		body = build_pdp_list_json();
-		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
-			 "application/json", body ? body : "{\"error\":\"oom\"}");
+		api_send(ac, 503, "Service Unavailable", "application/json",
+			 "{\"error\":\"disabled for stability; use /v1/contexts/counts\"}");
 	} else if (!strncmp(method, "GET", 3) && !strncmp(path, "/v1/contexts/mm/", 16)) {
 		imsi = path + 16;
 		mm = sgsn_mm_ctx_by_imsi(imsi);

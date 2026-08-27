@@ -50,6 +50,19 @@ int iu_rnc_tx_paging_cmd(struct ranap_iu_rnc *rnc,
 			 bool is_ps,
 			 uint32_t paging_cause);
 
+/* Snapshot for HTTP API: never walk sgsn->rnc_list from the API thread. */
+struct iu_rnc_api_entry {
+	bool valid;
+	struct osmo_rnc_id rnc_id;
+	struct osmo_sccp_addr sccp_addr;
+	int state;
+};
+
+unsigned iu_rnc_api_count(void);
+bool iu_rnc_api_get(unsigned idx, struct iu_rnc_api_entry *out);
+void iu_rnc_api_sync(struct ranap_iu_rnc *rnc);
+void iu_rnc_api_invalidate(struct ranap_iu_rnc *rnc);
+
 #define LOG_RNC_CAT(IU_RNC, subsys, loglevel, fmt, args ...) \
 	LOGPFSMSL((IU_RNC)->fi, subsys, loglevel, fmt, ## args)
 
