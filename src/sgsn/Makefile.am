@@ -86,6 +86,7 @@ osmo_sgsn_LDADD = \
 	$(LIBOSMOGSUPCLIENT_LIBS) \
 	$(LIBCARES_LIBS) \
 	$(LIBGTP_LIBS) \
+	-lpthread \
 	-lrt \
 	-lm \
 	$(NULL)

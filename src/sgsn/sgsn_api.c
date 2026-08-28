@@ -1,6 +1,7 @@
 /* Embedded HTTP REST API for OsmoSGSN */
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <strings.h>
 #include <unistd.h>
 #include <time.h>
@@ -10,11 +11,11 @@
 #include <string.h>
 #include <inttypes.h>
 #include <sys/socket.h>
+#include <poll.h>
+#include <pthread.h>
 
-#include <osmocom/core/select.h>
-#include <osmocom/core/socket.h>
 #include <osmocom/core/talloc.h>
-#include <osmocom/core/timer.h>
+#include <osmocom/core/socket.h>
 #include <osmocom/core/logging.h>
 #include <osmocom/core/linuxlist.h>
 #include <osmocom/core/utils.h>
@@ -44,20 +45,24 @@
 
 #define API_CONN_BUF_SIZE (64 * 1024)
 #define SGSN_API_TRACE_PKT_MAX 4096
-#define SGSN_API_MAX_CLIENTS 8
+#define SGSN_API_MAX_CLIENTS 16
 #define SGSN_API_IDLE_SEC 5
+#define SGSN_API_POLL_MS 500
 
 struct api_conn {
-	struct osmo_fd ofd;
-	struct osmo_timer_list idle_timer;
+	int fd;
 	char buf[API_CONN_BUF_SIZE];
 	size_t len;
+	time_t last_activity;
 };
 
-static struct osmo_fd g_api_listen_fd;
-static bool g_api_listen_registered;
+static int g_api_listen_fd = -1;
 static void *g_api_ctx;
 static unsigned g_api_client_count;
+static struct api_conn *g_api_conns[SGSN_API_MAX_CLIENTS];
+static pthread_t g_api_thread;
+static volatile bool g_api_thread_run;
+static pthread_mutex_t g_api_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static bool api_enabled(void)
 {
@@ -443,75 +448,33 @@ static char *build_links_json(void)
 }
 
 static void api_client_close(struct api_conn *ac);
-static void api_conn_idle_timeout(void *data);
 static int api_write_all(int fd, const char *data, size_t len);
-static int api_client_cb(struct osmo_fd *ofd, unsigned int what);
+static void handle_request(struct api_conn *ac, const char *req);
 
-static void api_accept_pending(void)
+static void api_send(struct api_conn *ac, int code, const char *status,
+		     const char *content_type, const char *body)
 {
-	struct api_conn *ac;
-	int cfd;
+	char *resp;
+	size_t body_len = body ? strlen(body) : 0;
 
-	if (!g_api_listen_registered)
+	if (content_type && body)
+		resp = talloc_asprintf(g_api_ctx,
+				       "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+				       code, status, content_type, body_len, body);
+	else
+		resp = talloc_asprintf(g_api_ctx,
+				       "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+				       code, status);
+	if (!resp)
 		return;
 
-	while (1) {
-		cfd = accept(g_api_listen_fd.fd, NULL, NULL);
-		if (cfd < 0) {
-			if (errno == EAGAIN || errno == EINTR)
-				break;
-			LOGP(DGPRS, LOGL_ERROR, "HTTP API accept failed: %s\n", strerror(errno));
-			break;
-		}
-
-		osmo_sock_set_nonblock(cfd, 1);
-
-		if (g_api_client_count >= SGSN_API_MAX_CLIENTS) {
-			static const char busy[] =
-				"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-			osmo_sock_set_nonblock(cfd, 0);
-			(void)api_write_all(cfd, busy, sizeof(busy) - 1);
-			close(cfd);
-			continue;
-		}
-
-		ac = talloc_zero(g_api_ctx, struct api_conn);
-		if (!ac) {
-			close(cfd);
-			continue;
-		}
-
-		osmo_timer_setup(&ac->idle_timer, api_conn_idle_timeout, ac);
-		osmo_timer_schedule(&ac->idle_timer, SGSN_API_IDLE_SEC, 0);
-
-		osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, 0);
-		if (osmo_fd_register(&ac->ofd) != 0) {
-			osmo_timer_del(&ac->idle_timer);
-			close(cfd);
-			talloc_free(ac);
-			continue;
-		}
-		g_api_client_count++;
+	if (api_write_all(ac->fd, resp, strlen(resp)) < 0) {
+		osmo_sock_set_nonblock(ac->fd, 0);
+		if (api_write_all(ac->fd, resp, strlen(resp)) < 0)
+			LOGP(DGPRS, LOGL_ERROR, "HTTP API write failed: %s\n", strerror(errno));
+		osmo_sock_set_nonblock(ac->fd, 1);
 	}
-}
-
-static void api_client_close(struct api_conn *ac)
-{
-	osmo_timer_del(&ac->idle_timer);
-	osmo_fd_unregister(&ac->ofd);
-	close(ac->ofd.fd);
-	if (g_api_client_count)
-		g_api_client_count--;
-	talloc_free(ac);
-	api_accept_pending();
-}
-
-static void api_conn_idle_timeout(void *data)
-{
-	struct api_conn *ac = data;
-
-	LOGP(DGPRS, LOGL_NOTICE, "HTTP API client idle timeout\n");
-	api_client_close(ac);
+	talloc_free(resp);
 }
 
 static int api_write_all(int fd, const char *data, size_t len)
@@ -535,30 +498,195 @@ static int api_write_all(int fd, const char *data, size_t len)
 	return 0;
 }
 
-static void api_send(struct api_conn *ac, int code, const char *status,
-		     const char *content_type, const char *body)
+static int api_conn_slot(struct api_conn *ac)
 {
-	char *resp;
-	size_t body_len = body ? strlen(body) : 0;
+	unsigned i;
 
-	if (content_type && body)
-		resp = talloc_asprintf(g_api_ctx,
-				       "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
-				       code, status, content_type, body_len, body);
-	else
-		resp = talloc_asprintf(g_api_ctx,
-				       "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-				       code, status);
-	if (!resp)
+	for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
+		if (g_api_conns[i] == ac)
+			return i;
+	}
+	return -1;
+}
+
+static void api_client_close(struct api_conn *ac)
+{
+	int slot = api_conn_slot(ac);
+
+	if (slot < 0)
+		return;
+	close(ac->fd);
+	talloc_free(ac);
+	g_api_conns[slot] = NULL;
+	if (g_api_client_count)
+		g_api_client_count--;
+}
+
+static int api_conn_add(int cfd)
+{
+	struct api_conn *ac;
+	unsigned i;
+
+	for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
+		if (g_api_conns[i])
+			continue;
+		ac = talloc_zero(g_api_ctx, struct api_conn);
+		if (!ac) {
+			close(cfd);
+			return -ENOMEM;
+		}
+		ac->fd = cfd;
+		ac->last_activity = time(NULL);
+		g_api_conns[i] = ac;
+		g_api_client_count++;
+		return 0;
+	}
+	return -EBUSY;
+}
+
+static void api_accept_all(void)
+{
+	while (g_api_thread_run && g_api_listen_fd >= 0) {
+		int cfd = accept(g_api_listen_fd, NULL, NULL);
+
+		if (cfd < 0) {
+			if (errno == EAGAIN || errno == EINTR)
+				break;
+			LOGP(DGPRS, LOGL_ERROR, "HTTP API accept failed: %s\n", strerror(errno));
+			break;
+		}
+
+		osmo_sock_set_nonblock(cfd, 1);
+
+		if (g_api_client_count >= SGSN_API_MAX_CLIENTS) {
+			static const char busy[] =
+				"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+			osmo_sock_set_nonblock(cfd, 0);
+			(void)api_write_all(cfd, busy, sizeof(busy) - 1);
+			close(cfd);
+			continue;
+		}
+
+		if (api_conn_add(cfd) < 0) {
+			static const char busy[] =
+				"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+			osmo_sock_set_nonblock(cfd, 0);
+			(void)api_write_all(cfd, busy, sizeof(busy) - 1);
+			close(cfd);
+		}
+	}
+}
+
+static void api_idle_sweep(void)
+{
+	time_t now = time(NULL);
+	unsigned i;
+
+	for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
+		struct api_conn *ac = g_api_conns[i];
+
+		if (!ac)
+			continue;
+		if (now - ac->last_activity >= SGSN_API_IDLE_SEC) {
+			LOGP(DGPRS, LOGL_NOTICE, "HTTP API client idle timeout\n");
+			api_client_close(ac);
+		}
+	}
+}
+
+static void api_client_read(struct api_conn *ac)
+{
+	char *hdr_end;
+	ssize_t rc;
+
+	rc = read(ac->fd, ac->buf + ac->len, sizeof(ac->buf) - ac->len - 1);
+	if (rc <= 0) {
+		api_client_close(ac);
+		return;
+	}
+
+	ac->len += rc;
+	ac->buf[ac->len] = '\0';
+	ac->last_activity = time(NULL);
+
+	if (ac->len + 1 >= sizeof(ac->buf)) {
+		api_send(ac, 413, "Payload Too Large", NULL, NULL);
+		api_client_close(ac);
+		return;
+	}
+
+	hdr_end = strstr(ac->buf, "\r\n\r\n");
+	if (!hdr_end)
 		return;
 
-	if (api_write_all(ac->ofd.fd, resp, strlen(resp)) < 0) {
-		osmo_sock_set_nonblock(ac->ofd.fd, 0);
-		if (api_write_all(ac->ofd.fd, resp, strlen(resp)) < 0)
-			LOGP(DGPRS, LOGL_ERROR, "HTTP API write failed: %s\n", strerror(errno));
-		osmo_sock_set_nonblock(ac->ofd.fd, 1);
+	*hdr_end = '\0';
+	pthread_mutex_lock(&g_api_lock);
+	handle_request(ac, ac->buf);
+	pthread_mutex_unlock(&g_api_lock);
+	api_client_close(ac);
+}
+
+static void *api_thread_main(void *arg)
+{
+	(void)arg;
+
+	while (g_api_thread_run) {
+		struct pollfd pfds[1 + SGSN_API_MAX_CLIENTS];
+		nfds_t nfds = 0;
+		unsigned i;
+		int rc;
+
+		if (g_api_listen_fd >= 0) {
+			pfds[nfds].fd = g_api_listen_fd;
+			pfds[nfds].events = POLLIN;
+			pfds[nfds].revents = 0;
+			nfds++;
+		}
+
+		for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
+			if (!g_api_conns[i])
+				continue;
+			pfds[nfds].fd = g_api_conns[i]->fd;
+			pfds[nfds].events = POLLIN;
+			pfds[nfds].revents = 0;
+			nfds++;
+		}
+
+		rc = poll(pfds, nfds, SGSN_API_POLL_MS);
+		if (rc < 0) {
+			if (errno == EINTR)
+				continue;
+			LOGP(DGPRS, LOGL_ERROR, "HTTP API poll failed: %s\n", strerror(errno));
+			break;
+		}
+
+		if (rc == 0) {
+			api_idle_sweep();
+			continue;
+		}
+
+		if (g_api_listen_fd >= 0 && (pfds[0].revents & (POLLIN | POLLERR | POLLHUP)))
+			api_accept_all();
+
+		for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
+			struct api_conn *ac = g_api_conns[i];
+			nfds_t p;
+
+			if (!ac)
+				continue;
+			for (p = 0; p < nfds; p++) {
+				if (pfds[p].fd != ac->fd)
+					continue;
+				if (pfds[p].revents & (POLLIN | POLLERR | POLLHUP))
+					api_client_read(ac);
+				break;
+			}
+		}
 	}
-	talloc_free(resp);
+
+	return NULL;
 }
 
 static const char *find_header(const char *hdr, const char *name)
@@ -1013,51 +1141,6 @@ static void handle_request(struct api_conn *ac, const char *req)
 		talloc_free(body);
 }
 
-static int api_client_cb(struct osmo_fd *ofd, unsigned int what)
-{
-	struct api_conn *ac = ofd->data;
-	char *hdr_end;
-	ssize_t rc;
-
-	if (!(what & OSMO_FD_READ))
-		return 0;
-
-	rc = read(ofd->fd, ac->buf + ac->len, sizeof(ac->buf) - ac->len - 1);
-	if (rc <= 0) {
-		api_client_close(ac);
-		return -1;
-	}
-
-	ac->len += rc;
-	ac->buf[ac->len] = '\0';
-	osmo_timer_schedule(&ac->idle_timer, SGSN_API_IDLE_SEC, 0);
-
-	if (ac->len + 1 >= sizeof(ac->buf)) {
-		api_send(ac, 413, "Payload Too Large", NULL, NULL);
-		api_client_close(ac);
-		return -1;
-	}
-
-	hdr_end = strstr(ac->buf, "\r\n\r\n");
-	if (!hdr_end)
-		return 0;
-
-	*hdr_end = '\0';
-	osmo_timer_del(&ac->idle_timer);
-	handle_request(ac, ac->buf);
-	api_client_close(ac);
-	return 0;
-}
-
-static int api_listen_cb(struct osmo_fd *ofd, unsigned int what)
-{
-	if (!(what & OSMO_FD_READ))
-		return 0;
-
-	api_accept_pending();
-	return 0;
-}
-
 int sgsn_api_init(struct sgsn_instance *inst)
 {
 	const char *bind_addr;
@@ -1084,21 +1167,23 @@ int sgsn_api_init(struct sgsn_instance *inst)
 		LOGP(DGPRS, LOGL_ERROR, "HTTP API listen(%s:%u) failed: %s\n",
 		     bind_addr, port, strerror(errno));
 
-	osmo_fd_setup(&g_api_listen_fd, fd, OSMO_FD_READ, api_listen_cb, NULL, 0);
-	if (osmo_fd_register(&g_api_listen_fd) != 0) {
-		LOGP(DGPRS, LOGL_ERROR, "Failed to register HTTP API socket\n");
+	g_api_listen_fd = fd;
+	g_api_thread_run = true;
+	if (pthread_create(&g_api_thread, NULL, api_thread_main, NULL) != 0) {
+		LOGP(DGPRS, LOGL_ERROR, "Failed to start HTTP API thread\n");
 		close(fd);
+		g_api_listen_fd = -1;
 		return -EIO;
 	}
 
-	g_api_listen_registered = true;
-	LOGP(DGPRS, LOGL_NOTICE, "HTTP API listening on %s:%u\n", bind_addr, port);
+	LOGP(DGPRS, LOGL_NOTICE, "HTTP API listening on %s:%u (dedicated thread)\n", bind_addr, port);
 	return 0;
 }
 
 void sgsn_api_shutdown(void)
 {
 	struct sgsn_api_trace *t, *t2;
+	unsigned i;
 
 	llist_for_each_entry_safe(t, t2, &g_api_traces, entry) {
 		llist_del(&t->entry);
@@ -1107,10 +1192,17 @@ void sgsn_api_shutdown(void)
 		talloc_free(t);
 	}
 
-	if (g_api_listen_registered) {
-		osmo_fd_unregister(&g_api_listen_fd);
-		close(g_api_listen_fd.fd);
-		g_api_listen_registered = false;
+	g_api_thread_run = false;
+	if (g_api_listen_fd >= 0) {
+		shutdown(g_api_listen_fd, SHUT_RDWR);
+		close(g_api_listen_fd);
+		g_api_listen_fd = -1;
+	}
+	pthread_join(g_api_thread, NULL);
+
+	for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
+		if (g_api_conns[i])
+			api_client_close(g_api_conns[i]);
 	}
 	g_api_client_count = 0;
 }
