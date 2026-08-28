@@ -258,7 +258,9 @@ static inline bool sgsn_mm_ctx_is_authenticated(struct sgsn_mm_ctx *ctx)
 		LOGGBP(llme, DMM, level, fmt, ## args); \
 	} else if ((msg) && (_ue = MSG_IU_UE_CTX(msg))) { \
 		LOGIUP(_ue, level, fmt, ## args); \
-	} else { OSMO_ASSERT(0); } \
+	} else { \
+		LOGP(DMM, level, fmt, ## args); \
+	} \
 	} while (0)
 
 /* look-up a SGSN MM context based on TLLI + RAI */

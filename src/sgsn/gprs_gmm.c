@@ -2383,7 +2383,8 @@ int gsm0408_gprs_rcvmsg_gb(struct msgb *msg, struct gprs_llc_llme *llme,
 	struct osmo_routing_area_id ra_id = {};
 	int rc = -EINVAL;
 
-	bssgp_parse_cell_id2(&ra_id, NULL, msgb_bcid(msg), 8);
+	if (msgb_bcid(msg))
+		bssgp_parse_cell_id2(&ra_id, NULL, msgb_bcid(msg), 8);
 	mmctx = sgsn_mm_ctx_by_tlli(msgb_tlli(msg), &ra_id);
 	if (mmctx) {
 		rate_ctr_inc(rate_ctr_group_get_ctr(mmctx->ctrg, GMM_CTR_PKTS_SIG_IN));

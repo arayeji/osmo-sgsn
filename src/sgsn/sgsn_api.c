@@ -1043,6 +1043,7 @@ static int api_client_cb(struct osmo_fd *ofd, unsigned int what)
 		return 0;
 
 	*hdr_end = '\0';
+	osmo_timer_del(&ac->idle_timer);
 	handle_request(ac, ac->buf);
 	api_client_close(ac);
 	return 0;
