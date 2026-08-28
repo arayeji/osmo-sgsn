@@ -14,6 +14,7 @@
 #include <osmocom/core/select.h>
 #include <osmocom/core/socket.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/timer.h>
 #include <osmocom/core/logging.h>
 #include <osmocom/core/linuxlist.h>
 #include <osmocom/core/utils.h>
@@ -43,9 +44,12 @@
 
 #define API_CONN_BUF_SIZE (64 * 1024)
 #define SGSN_API_TRACE_PKT_MAX 4096
+#define SGSN_API_MAX_CLIENTS 16
+#define SGSN_API_IDLE_SEC 10
 
 struct api_conn {
 	struct osmo_fd ofd;
+	struct osmo_timer_list idle_timer;
 	char buf[API_CONN_BUF_SIZE];
 	size_t len;
 };
@@ -53,6 +57,7 @@ struct api_conn {
 static struct osmo_fd g_api_listen_fd;
 static bool g_api_listen_registered;
 static void *g_api_ctx;
+static unsigned g_api_client_count;
 
 static bool api_enabled(void)
 {
@@ -494,12 +499,42 @@ static char *build_links_json(void)
 	return start;
 }
 
+static void api_client_close(struct api_conn *ac);
+
+static void api_conn_idle_timeout(void *data)
+{
+	struct api_conn *ac = data;
+
+	LOGP(DGPRS, LOGL_NOTICE, "HTTP API client idle timeout\n");
+	api_client_close(ac);
+}
+
+static int api_write_all(int fd, const char *data, size_t len)
+{
+	size_t off = 0;
+
+	while (off < len) {
+		ssize_t rc = write(fd, data + off, len - off);
+
+		if (rc < 0) {
+			if (errno == EINTR)
+				continue;
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return -EAGAIN;
+			return -errno;
+		}
+		if (rc == 0)
+			return -EIO;
+		off += rc;
+	}
+	return 0;
+}
+
 static void api_send(struct api_conn *ac, int code, const char *status,
 		     const char *content_type, const char *body)
 {
 	char *resp;
 	size_t body_len = body ? strlen(body) : 0;
-	ssize_t rc;
 
 	if (content_type && body)
 		resp = talloc_asprintf(g_api_ctx,
@@ -512,8 +547,7 @@ static void api_send(struct api_conn *ac, int code, const char *status,
 	if (!resp)
 		return;
 
-	rc = write(ac->ofd.fd, resp, strlen(resp));
-	if (rc < 0)
+	if (api_write_all(ac->ofd.fd, resp, strlen(resp)) < 0)
 		LOGP(DGPRS, LOGL_ERROR, "HTTP API write failed: %s\n", strerror(errno));
 	talloc_free(resp);
 }
@@ -972,8 +1006,11 @@ static void handle_request(struct api_conn *ac, const char *req)
 
 static void api_client_close(struct api_conn *ac)
 {
+	osmo_timer_del(&ac->idle_timer);
 	osmo_fd_unregister(&ac->ofd);
 	close(ac->ofd.fd);
+	if (g_api_client_count)
+		g_api_client_count--;
 	talloc_free(ac);
 }
 
@@ -994,6 +1031,7 @@ static int api_client_cb(struct osmo_fd *ofd, unsigned int what)
 
 	ac->len += rc;
 	ac->buf[ac->len] = '\0';
+	osmo_timer_schedule(&ac->idle_timer, SGSN_API_IDLE_SEC, 0);
 
 	if (ac->len + 1 >= sizeof(ac->buf)) {
 		api_send(ac, 413, "Payload Too Large", NULL, NULL);
@@ -1019,25 +1057,42 @@ static int api_listen_cb(struct osmo_fd *ofd, unsigned int what)
 	if (!(what & OSMO_FD_READ))
 		return 0;
 
-	cfd = accept(ofd->fd, NULL, NULL);
-	if (cfd < 0) {
-		if (errno != EAGAIN && errno != EINTR)
+	while (1) {
+		cfd = accept(ofd->fd, NULL, NULL);
+		if (cfd < 0) {
+			if (errno == EAGAIN || errno == EINTR)
+				break;
 			LOGP(DGPRS, LOGL_ERROR, "HTTP API accept failed: %s\n", strerror(errno));
-		return 0;
-	}
+			break;
+		}
 
-	osmo_sock_set_nonblock(cfd, 1);
+		osmo_sock_set_nonblock(cfd, 1);
 
-	ac = talloc_zero(g_api_ctx, struct api_conn);
-	if (!ac) {
-		close(cfd);
-		return 0;
-	}
+		if (g_api_client_count >= SGSN_API_MAX_CLIENTS) {
+			static const char busy[] =
+				"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+			(void)api_write_all(cfd, busy, sizeof(busy) - 1);
+			close(cfd);
+			continue;
+		}
 
-	osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, 0);
-	if (osmo_fd_register(&ac->ofd) != 0) {
-		close(cfd);
-		talloc_free(ac);
+		ac = talloc_zero(g_api_ctx, struct api_conn);
+		if (!ac) {
+			close(cfd);
+			continue;
+		}
+
+		osmo_timer_setup(&ac->idle_timer, api_conn_idle_timeout, ac);
+		osmo_timer_schedule(&ac->idle_timer, SGSN_API_IDLE_SEC, 0);
+
+		osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, 0);
+		if (osmo_fd_register(&ac->ofd) != 0) {
+			osmo_timer_del(&ac->idle_timer);
+			close(cfd);
+			talloc_free(ac);
+			continue;
+		}
+		g_api_client_count++;
 	}
 	return 0;
 }
@@ -1093,4 +1148,5 @@ void sgsn_api_shutdown(void)
 		close(g_api_listen_fd.fd);
 		g_api_listen_registered = false;
 	}
+	g_api_client_count = 0;
 }
