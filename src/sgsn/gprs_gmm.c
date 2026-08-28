@@ -1735,7 +1735,15 @@ static int gsm48_rx_gmm_ra_upd_req(struct sgsn_mm_ctx *mmctx, struct msgb *msg,
 		struct osmo_routing_area_id new_ra_id = {};
 		char new_ra[32];
 
-		bssgp_parse_cell_id2(&new_ra_id, NULL, msgb_bcid(msg), 8);
+		/* The BSSGP cell id is a pointer the Gb layer parks in the msgb
+		 * control buffer; nothing sets it on Iu. On a fresh msgb it is
+		 * NULL and dereferencing it here faults inside
+		 * osmo_plmn_from_bcd(); on a recycled one it is a stale pointer
+		 * and we decode a garbage RA into the log line below. It feeds
+		 * nothing but that log line, so only read it when we actually
+		 * came in over Gb and leave the RA unset otherwise. */
+		if (llme && msgb_bcid(msg))
+			bssgp_parse_cell_id2(&new_ra_id, NULL, msgb_bcid(msg), 8);
 		osmo_rai_name2_buf(new_ra, sizeof(new_ra), &new_ra_id);
 
 		if (mmctx->gmm_fsm->state == ST_GMM_DEREGISTERED)
