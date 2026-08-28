@@ -25,6 +25,8 @@
 #include <osmocom/sgsn/pdpctx.h>
 #include <osmocom/sgsn/sgsn.h>
 #include <osmocom/sgsn/gtp.h>
+#include <osmocom/sgsn/signal.h>
+#include <osmocom/core/signal.h>
 
 #define SGSN_CTX_MAX_PDP_IE	16
 #define SGSN_CTX_MM_BUF		512
@@ -37,6 +39,37 @@ struct sgsn_ctx_xfer {
 };
 
 static LLIST_HEAD(sgsn_ctx_xfer_list);
+
+static void ctx_xfer_purge_mm(struct sgsn_mm_ctx *mm)
+{
+	struct sgsn_ctx_xfer *xfer, *tmp;
+
+	if (!mm)
+		return;
+
+	llist_for_each_entry_safe(xfer, tmp, &sgsn_ctx_xfer_list, list) {
+		if (xfer->mm != mm)
+			continue;
+		llist_del(&xfer->list);
+		talloc_free(xfer);
+	}
+}
+
+static int sgsn_gtp_ctx_mm_signal(unsigned subsys, unsigned signal,
+				  void *handler_data, void *_signal_data)
+{
+	struct sgsn_signal_data *sd = _signal_data;
+
+	(void)handler_data;
+
+	if (subsys != SS_SGSN)
+		return 0;
+
+	if (signal == S_SGSN_MM_FREE && sd && sd->mm)
+		ctx_xfer_purge_mm(sd->mm);
+
+	return 0;
+}
 
 static struct sgsn_subscriber_data *mm_subscr_data(struct sgsn_mm_ctx *mm)
 {
@@ -605,5 +638,8 @@ int sgsn_gtp_ctx_init(struct sgsn_instance *sgi)
 		return rc;
 
 	LOGP(DGPRS, LOGL_NOTICE, "SGSN Context Request/Response/Ack handling enabled\n");
+
+	osmo_signal_register_handler(SS_SGSN, sgsn_gtp_ctx_mm_signal, NULL);
+
 	return 0;
 }

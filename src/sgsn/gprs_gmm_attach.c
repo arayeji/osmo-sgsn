@@ -43,6 +43,7 @@ static void st_init(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 	ctx->sec_ctx = OSMO_AUTH_TYPE_NONE;
 	ctx->auth_triplet.key_seq = GSM_KEY_SEQ_INVAL;
 	ctx->gmm_att_req.auth_reattempt = 0;
+	gprs_gmm_mm_timer_stop_all(ctx);
 
 	/*
 	 * TODO: remove pending_req as soon the sgsn_auth code doesn't depend
@@ -231,6 +232,7 @@ static void st_accept_on_enter(struct osmo_fsm_inst *fi, uint32_t prev_state)
 	struct sgsn_mm_ctx *ctx = fi->priv;
 
 	ctx->num_T_exp = 0;
+	gprs_gmm_mm_timer_stop_all(ctx);
 
 	/* TODO: remove pending_req as soon the sgsn_auth code doesn't depend on it */
 	ctx->pending_req = 0;
@@ -278,6 +280,8 @@ static void st_reject(struct osmo_fsm_inst *fi, uint32_t event, void *data)
 {
 	struct sgsn_mm_ctx *ctx = fi->priv;
 	long reject_cause = (long) data;
+
+	gprs_gmm_mm_timer_stop_all(ctx);
 
 	if (reject_cause != GMM_DISCARD_MS_WITHOUT_REJECT)
 		gsm48_tx_gmm_att_rej(ctx, (uint8_t) reject_cause);

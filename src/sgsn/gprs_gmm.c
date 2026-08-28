@@ -75,9 +75,44 @@
 
 static void mmctx_timer_cb(void *_mm);
 
+static bool mmctx_attach_fsm_owns_timer(const struct sgsn_mm_ctx *mm, unsigned int T)
+{
+#ifdef PTMSI_ALLOC
+	if (!mm->gmm_att_req.fsm || mm->gmm_att_req.fsm->state == ST_INIT)
+		return false;
+	switch (T) {
+	case 3350:
+	case 3360:
+	case 3370:
+		return true;
+	default:
+		return false;
+	}
+#else
+	(void)mm;
+	(void)T;
+	return false;
+#endif
+}
+
+void gprs_gmm_mm_timer_stop_all(struct sgsn_mm_ctx *mm)
+{
+	if (!mm || !osmo_timer_pending(&mm->timer))
+		return;
+	osmo_timer_del(&mm->timer);
+}
+
 static void mmctx_timer_start(struct sgsn_mm_ctx *mm, unsigned int T)
 {
 	unsigned long seconds;
+
+	if (mmctx_attach_fsm_owns_timer(mm, T)) {
+		LOGMMCTXP(LOGL_DEBUG, mm,
+			  "Not starting legacy T%u; attach FSM active in %s\n",
+			  T, osmo_fsm_inst_state_name(mm->gmm_att_req.fsm));
+		return;
+	}
+
 	if (osmo_timer_pending(&mm->timer))
 		LOGMMCTXP(LOGL_ERROR, mm, "Starting MM timer %u while old "
 			"timer %u pending\n", T, mm->T);
@@ -126,8 +161,17 @@ int gsm48_gmm_sendmsg(struct msgb *msg, int command,
 	if (mm) {
 		rate_ctr_inc(rate_ctr_group_get_ctr(mm->ctrg, GMM_CTR_PKTS_SIG_OUT));
 #ifdef BUILD_IU
-		if (mm->ran_type == MM_CTX_T_UTRAN_Iu)
+		if (mm->ran_type == MM_CTX_T_UTRAN_Iu) {
+			if (!mm->iu.ue_ctx) {
+				LOGMMCTXP(LOGL_ERROR, mm,
+					  "Cannot TX GMM on Iu: no UE context\n");
+				msgb_free(msg);
+				return -ENOTCONN;
+			}
+			if (!MSG_IU_UE_CTX(msg))
+				MSG_IU_UE_CTX_SET(msg, mm->iu.ue_ctx);
 			return sgsn_ranap_iu_tx(msg, GPRS_SAPI_GMM);
+		}
 #endif
 	}
 
@@ -398,7 +442,7 @@ int gsm48_tx_gmm_att_ack(struct sgsn_mm_ctx *mm)
 
 /* Chapter 9.4.5: Attach reject */
 static int _tx_gmm_att_rej(struct msgb *msg, uint8_t gmm_cause,
-			   const struct sgsn_mm_ctx *mm)
+			   struct sgsn_mm_ctx *mm)
 {
 	struct gsm48_hdr *gh;
 
@@ -411,7 +455,7 @@ static int _tx_gmm_att_rej(struct msgb *msg, uint8_t gmm_cause,
 	gh->msg_type = GSM48_MT_GMM_ATTACH_REJ;
 	gh->data[0] = gmm_cause;
 
-	return gsm48_gmm_sendmsg(msg, 0, NULL, false);
+	return gsm48_gmm_sendmsg(msg, 0, mm, false);
 }
 static int gsm48_tx_gmm_att_rej_oldmsg(const struct msgb *old_msg,
 					uint8_t gmm_cause)
@@ -1003,6 +1047,10 @@ int gsm48_gmm_authorize(struct sgsn_mm_ctx *ctx)
 		extract_subscr_msisdn(ctx);
 		extract_subscr_hlr(ctx);
 #ifdef PTMSI_ALLOC
+		/* Attach FSM owns T3350 once it leaves ST_INIT. */
+		if (ctx->gmm_att_req.fsm && ctx->gmm_att_req.fsm->state != ST_INIT)
+			return 0;
+
 		/* Start T3350 and re-transmit up to 5 times until ATTACH COMPLETE */
 		mmctx_timer_start(ctx, 3350);
 		ctx->t3350_mode = GMM_T3350_MODE_ATT;
@@ -2226,6 +2274,15 @@ static void mmctx_timer_cb(void *_mm)
 	case 3350:	/* waiting for ATTACH COMPLETE */
 		if (mm->num_T_exp >= 5) {
 			LOGMMCTXP(LOGL_NOTICE, mm, "T3350 expired >= 5 times\n");
+#ifdef PTMSI_ALLOC
+			if (mm->gmm_att_req.fsm &&
+			    mm->gmm_att_req.fsm->state != ST_INIT &&
+			    mm->gmm_att_req.fsm->state != ST_REJECT) {
+				osmo_fsm_inst_dispatch(mm->gmm_att_req.fsm, E_REJECT,
+						       (void *)GMM_DISCARD_MS_WITHOUT_REJECT);
+				break;
+			}
+#endif
 			gprs_gmm_mm_ctx_cleanup_free(mm, "T3350");
 			/* FIXME: should we return some error? */
 			break;

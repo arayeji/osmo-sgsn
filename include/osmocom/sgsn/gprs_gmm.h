@@ -60,4 +60,7 @@ void extract_subscr_hlr(struct sgsn_mm_ctx *ctx);
 
 void msgid2mmctx(struct sgsn_mm_ctx *mm, const struct msgb *msg);
 void mmctx2msgid(struct msgb *msg, const struct sgsn_mm_ctx *mm);
+
+/* Cancel the legacy mm->timer (T3350/T3360/T3370), if running. */
+void gprs_gmm_mm_timer_stop_all(struct sgsn_mm_ctx *mm);
 #endif /* _GPRS_GMM_H */
