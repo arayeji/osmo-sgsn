@@ -44,8 +44,8 @@
 
 #define API_CONN_BUF_SIZE (64 * 1024)
 #define SGSN_API_TRACE_PKT_MAX 4096
-#define SGSN_API_MAX_CLIENTS 16
-#define SGSN_API_IDLE_SEC 10
+#define SGSN_API_MAX_CLIENTS 8
+#define SGSN_API_IDLE_SEC 5
 
 struct api_conn {
 	struct osmo_fd ofd;
@@ -363,143 +363,147 @@ static char *build_counts_json(void)
 
 static char *build_links_json(void)
 {
-	char *start, *cur, *esc;
-	size_t space;
-	bool first;
-	struct sgsn_ggsn_ctx *ggsn;
-	struct sgsn_mme_ctx *mme;
+	char *iu_json = NULL;
+	char *result;
+	char gtp_local[INET_ADDRSTRLEN + 1];
+	char gsup_ip[256];
+	int gsup_port = 0;
+	bool gsup_up = false;
 #if BUILD_IU
 	unsigned iu_idx;
 	struct iu_rnc_api_entry iu_ent;
+	char iu_buf[512];
+	char *iu_cur = iu_buf;
+	size_t iu_space = sizeof(iu_buf);
+	bool iu_first = true;
 #endif
 
-	start = talloc_zero_size(g_api_ctx, 512 * 1024);
-	if (!start)
-		return NULL;
-	cur = start;
-	space = 512 * 1024;
-	esc = talloc_size(g_api_ctx, 512);
-	if (!esc)
+	if (!sgsn)
 		return NULL;
 
-	cur = json_append(cur, start, &space, "{\"api\":[");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/health\",\"auth\":false,\"description\":\"Health check\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/v1/stats\",\"auth\":true,\"description\":\"Operational stats snapshot\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/v1/links\",\"auth\":true,\"description\":\"API and network links\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/counts\",\"auth\":true,\"description\":\"Context counts\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/mm\",\"auth\":true,\"description\":\"All MM contexts\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/pdp\",\"auth\":true,\"description\":\"All PDP contexts\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/v1/contexts/mm/{imsi}\",\"auth\":true,\"description\":\"One MM context\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"POST\",\"path\":\"/v1/subscribers/{imsi}/disconnect\",\"auth\":true,\"description\":\"Disconnect subscriber PDP sessions\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"POST\",\"path\":\"/v1/subscribers/{imsi}/detach\",\"auth\":true,\"description\":\"Detach subscriber\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"GET\",\"path\":\"/v1/trace\",\"auth\":true,\"description\":\"List active IMSI debug traces\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"POST\",\"path\":\"/v1/trace/{imsi}\",\"auth\":true,\"description\":\"Enable IMSI debug trace\"},");
-	cur = json_append(cur, start, &space,
-			  "{\"method\":\"DELETE\",\"path\":\"/v1/trace/{imsi}\",\"auth\":true,\"description\":\"Disable IMSI debug trace\"}],");
-	cur = json_append(cur, start, &space, "\"network\":{");
-
-	if (sgsn->gsn) {
-		cur = json_append(cur, start, &space, "\"gtp\":{");
-		json_escape(inet_ntoa(sgsn->gsn->gsnc), esc, 512);
-		cur = json_append(cur, start, &space, "\"signalling_ip\":\"%s\",", esc);
-		json_escape(inet_ntoa(sgsn->gsn->gsnu), esc, 512);
-		cur = json_append(cur, start, &space, "\"user_ip\":\"%s\"},", esc);
-	} else {
-		cur = json_append(cur, start, &space, "\"gtp\":null,");
-	}
-
-	json_escape(inet_ntoa(sgsn->cfg.gtp_listenaddr.sin_addr), esc, 512);
-	cur = json_append(cur, start, &space, "\"gtp_local_ip\":\"%s\",", esc);
-
-	cur = json_append(cur, start, &space, "\"ggsn\":[");
-	first = true;
-	llist_for_each_entry(ggsn, &sgsn->ggsn_list, list) {
-		if (ggsn->id == UINT32_MAX)
-			continue;
-		if (!first)
-			cur = json_append(cur, start, &space, ",");
-		first = false;
-		json_escape(inet_ntoa(ggsn->remote_addr), esc, 512);
-		cur = json_append(cur, start, &space,
-				  "{\"id\":%u,\"remote_ip\":\"%s\",\"gtp_version\":%u,\"pdp_count\":0,\"echo_interval\":%u}",
-				  ggsn->id, esc, ggsn->gtp_version, ggsn->echo_interval);
-	}
-	cur = json_append(cur, start, &space, "],");
-
+	inet_ntop(AF_INET, &sgsn->cfg.gtp_listenaddr.sin_addr, gtp_local, sizeof(gtp_local));
+	gsup_ip[0] = '\0';
 	if (sgsn->gsup_client) {
-		cur = json_append(cur, start, &space, "\"gsup\":{");
-		json_escape(osmo_gsup_client_get_rem_addr(sgsn->gsup_client), esc, 512);
-		cur = json_append(cur, start, &space, "\"remote_ip\":\"%s\",", esc);
-		cur = json_append(cur, start, &space, "\"remote_port\":%d,",
-				  osmo_gsup_client_get_rem_port(sgsn->gsup_client));
-		cur = json_append(cur, start, &space, "\"connected\":%s},",
-				  osmo_gsup_client_is_connected(sgsn->gsup_client) ? "true" : "false");
+		osmo_strlcpy(gsup_ip, osmo_gsup_client_get_rem_addr(sgsn->gsup_client), sizeof(gsup_ip));
+		gsup_port = osmo_gsup_client_get_rem_port(sgsn->gsup_client);
+		gsup_up = osmo_gsup_client_is_connected(sgsn->gsup_client);
 	} else if (sgsn->cfg.gsup_server_addr.sin_addr.s_addr) {
-		cur = json_append(cur, start, &space, "\"gsup\":{");
-		json_escape(inet_ntoa(sgsn->cfg.gsup_server_addr.sin_addr), esc, 512);
-		cur = json_append(cur, start, &space, "\"remote_ip\":\"%s\",", esc);
-		cur = json_append(cur, start, &space, "\"remote_port\":%d,",
-				  sgsn->cfg.gsup_server_port);
-		cur = json_append(cur, start, &space, "\"connected\":false},");
-	} else {
-		cur = json_append(cur, start, &space, "\"gsup\":null,");
-	}
-
-	cur = json_append(cur, start, &space, "\"mme\":[");
-	first = true;
-	llist_for_each_entry(mme, &sgsn->mme_list, list) {
-		if (!first)
-			cur = json_append(cur, start, &space, ",");
-		first = false;
-		json_escape(mme->name ? mme->name : "", esc, 512);
-		cur = json_append(cur, start, &space, "{\"name\":\"%s\",", esc);
-		json_escape(inet_ntoa(mme->remote_addr), esc, 512);
-		cur = json_append(cur, start, &space,
-				  "\"remote_ip\":\"%s\",\"default_route\":%s}",
-				  esc, mme->default_route ? "true" : "false");
+		inet_ntop(AF_INET, &sgsn->cfg.gsup_server_addr.sin_addr, gsup_ip, sizeof(gsup_ip));
+		gsup_port = sgsn->cfg.gsup_server_port;
 	}
 
 #if BUILD_IU
-	/* Cached snapshot — never walk sgsn->rnc_list from HTTP handlers. */
-	cur = json_append(cur, start, &space, "],\"iu_rnc\":[");
-	first = true;
+	iu_buf[0] = '\0';
 	for (iu_idx = 0; iu_idx < iu_rnc_api_count(); iu_idx++) {
+		char rnc_id[64], sccp_addr[64], state[32];
+
 		if (!iu_rnc_api_get(iu_idx, &iu_ent))
 			break;
-
-		if (!first)
-			cur = json_append(cur, start, &space, ",");
-		first = false;
-		api_fmt_rnc_id(&iu_ent.rnc_id, esc, 512);
-		cur = json_append(cur, start, &space, "{\"rnc_id\":\"%s\",", esc);
-		api_fmt_sccp_pc(&iu_ent.sccp_addr, esc, 512);
-		cur = json_append(cur, start, &space, "\"sccp_addr\":\"%s\",", esc);
-		api_fmt_iu_rnc_state_cached(iu_ent.state, esc, 512);
-		cur = json_append(cur, start, &space,
-				  "\"state\":\"%s\"}",
-				  esc);
+		if (!iu_first)
+			iu_cur = json_append(iu_cur, iu_buf, &iu_space, ",");
+		iu_first = false;
+		api_fmt_rnc_id(&iu_ent.rnc_id, rnc_id, sizeof(rnc_id));
+		api_fmt_sccp_pc(&iu_ent.sccp_addr, sccp_addr, sizeof(sccp_addr));
+		api_fmt_iu_rnc_state_cached(iu_ent.state, state, sizeof(state));
+		iu_cur = json_append(iu_cur, iu_buf, &iu_space,
+				     "{\"rnc_id\":\"%s\",\"sccp_addr\":\"%s\",\"state\":\"%s\"}",
+				     rnc_id, sccp_addr, state);
 	}
-	cur = json_append(cur, start, &space, "]}}");
+	iu_json = iu_buf;
 #else
-	cur = json_append(cur, start, &space, "]}}");
+	iu_json = "";
 #endif
 
-	talloc_free(esc);
-	return start;
+	if (sgsn->gsn) {
+		char gtp_sig[INET_ADDRSTRLEN + 1];
+		char gtp_user[INET_ADDRSTRLEN + 1];
+
+		inet_ntop(AF_INET, &sgsn->gsn->gsnc, gtp_sig, sizeof(gtp_sig));
+		inet_ntop(AF_INET, &sgsn->gsn->gsnu, gtp_user, sizeof(gtp_user));
+		result = talloc_asprintf(g_api_ctx,
+					 "{\"network\":{\"gtp\":{\"signalling_ip\":\"%s\",\"user_ip\":\"%s\"},"
+					 "\"gtp_local_ip\":\"%s\","
+					 "\"ggsn\":[],\"mme\":[],"
+					 "\"gsup\":{\"remote_ip\":\"%s\",\"remote_port\":%d,\"connected\":%s},"
+					 "\"iu_rnc\":[%s]}}",
+					 gtp_sig, gtp_user, gtp_local,
+					 gsup_ip, gsup_port, gsup_up ? "true" : "false",
+					 iu_json ? iu_json : "");
+	} else {
+		result = talloc_asprintf(g_api_ctx,
+					 "{\"network\":{\"gtp\":null,"
+					 "\"gtp_local_ip\":\"%s\","
+					 "\"ggsn\":[],\"mme\":[],"
+					 "\"gsup\":{\"remote_ip\":\"%s\",\"remote_port\":%d,\"connected\":%s},"
+					 "\"iu_rnc\":[%s]}}",
+					 gtp_local, gsup_ip, gsup_port, gsup_up ? "true" : "false",
+					 iu_json ? iu_json : "");
+	}
+	return result;
 }
 
 static void api_client_close(struct api_conn *ac);
+static void api_conn_idle_timeout(void *data);
+static int api_write_all(int fd, const char *data, size_t len);
+
+static void api_accept_pending(void)
+{
+	struct api_conn *ac;
+	int cfd;
+
+	if (!g_api_listen_registered)
+		return;
+
+	while (1) {
+		cfd = accept(g_api_listen_fd.fd, NULL, NULL);
+		if (cfd < 0) {
+			if (errno == EAGAIN || errno == EINTR)
+				break;
+			LOGP(DGPRS, LOGL_ERROR, "HTTP API accept failed: %s\n", strerror(errno));
+			break;
+		}
+
+		osmo_sock_set_nonblock(cfd, 1);
+
+		if (g_api_client_count >= SGSN_API_MAX_CLIENTS) {
+			static const char busy[] =
+				"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+			osmo_sock_set_nonblock(cfd, 0);
+			(void)api_write_all(cfd, busy, sizeof(busy) - 1);
+			close(cfd);
+			continue;
+		}
+
+		ac = talloc_zero(g_api_ctx, struct api_conn);
+		if (!ac) {
+			close(cfd);
+			continue;
+		}
+
+		osmo_timer_setup(&ac->idle_timer, api_conn_idle_timeout, ac);
+		osmo_timer_schedule(&ac->idle_timer, SGSN_API_IDLE_SEC, 0);
+
+		osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, 0);
+		if (osmo_fd_register(&ac->ofd) != 0) {
+			osmo_timer_del(&ac->idle_timer);
+			close(cfd);
+			talloc_free(ac);
+			continue;
+		}
+		g_api_client_count++;
+	}
+}
+
+static void api_client_close(struct api_conn *ac)
+{
+	osmo_timer_del(&ac->idle_timer);
+	osmo_fd_unregister(&ac->ofd);
+	close(ac->ofd.fd);
+	if (g_api_client_count)
+		g_api_client_count--;
+	talloc_free(ac);
+	api_accept_pending();
+}
 
 static void api_conn_idle_timeout(void *data)
 {
@@ -547,8 +551,12 @@ static void api_send(struct api_conn *ac, int code, const char *status,
 	if (!resp)
 		return;
 
-	if (api_write_all(ac->ofd.fd, resp, strlen(resp)) < 0)
-		LOGP(DGPRS, LOGL_ERROR, "HTTP API write failed: %s\n", strerror(errno));
+	if (api_write_all(ac->ofd.fd, resp, strlen(resp)) < 0) {
+		osmo_sock_set_nonblock(ac->ofd.fd, 0);
+		if (api_write_all(ac->ofd.fd, resp, strlen(resp)) < 0)
+			LOGP(DGPRS, LOGL_ERROR, "HTTP API write failed: %s\n", strerror(errno));
+		osmo_sock_set_nonblock(ac->ofd.fd, 1);
+	}
 	talloc_free(resp);
 }
 
@@ -1004,16 +1012,6 @@ static void handle_request(struct api_conn *ac, const char *req)
 		talloc_free(body);
 }
 
-static void api_client_close(struct api_conn *ac)
-{
-	osmo_timer_del(&ac->idle_timer);
-	osmo_fd_unregister(&ac->ofd);
-	close(ac->ofd.fd);
-	if (g_api_client_count)
-		g_api_client_count--;
-	talloc_free(ac);
-}
-
 static int api_client_cb(struct osmo_fd *ofd, unsigned int what)
 {
 	struct api_conn *ac = ofd->data;
@@ -1051,49 +1049,10 @@ static int api_client_cb(struct osmo_fd *ofd, unsigned int what)
 
 static int api_listen_cb(struct osmo_fd *ofd, unsigned int what)
 {
-	struct api_conn *ac;
-	int cfd;
-
 	if (!(what & OSMO_FD_READ))
 		return 0;
 
-	while (1) {
-		cfd = accept(ofd->fd, NULL, NULL);
-		if (cfd < 0) {
-			if (errno == EAGAIN || errno == EINTR)
-				break;
-			LOGP(DGPRS, LOGL_ERROR, "HTTP API accept failed: %s\n", strerror(errno));
-			break;
-		}
-
-		osmo_sock_set_nonblock(cfd, 1);
-
-		if (g_api_client_count >= SGSN_API_MAX_CLIENTS) {
-			static const char busy[] =
-				"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-			(void)api_write_all(cfd, busy, sizeof(busy) - 1);
-			close(cfd);
-			continue;
-		}
-
-		ac = talloc_zero(g_api_ctx, struct api_conn);
-		if (!ac) {
-			close(cfd);
-			continue;
-		}
-
-		osmo_timer_setup(&ac->idle_timer, api_conn_idle_timeout, ac);
-		osmo_timer_schedule(&ac->idle_timer, SGSN_API_IDLE_SEC, 0);
-
-		osmo_fd_setup(&ac->ofd, cfd, OSMO_FD_READ, api_client_cb, ac, 0);
-		if (osmo_fd_register(&ac->ofd) != 0) {
-			osmo_timer_del(&ac->idle_timer);
-			close(cfd);
-			talloc_free(ac);
-			continue;
-		}
-		g_api_client_count++;
-	}
+	api_accept_pending();
 	return 0;
 }
 
@@ -1119,6 +1078,9 @@ int sgsn_api_init(struct sgsn_instance *inst)
 		LOGP(DGPRS, LOGL_ERROR, "Failed to open HTTP API on %s:%u\n", bind_addr, port);
 		return -EIO;
 	}
+	if (listen(fd, 128) < 0)
+		LOGP(DGPRS, LOGL_ERROR, "HTTP API listen(%s:%u) failed: %s\n",
+		     bind_addr, port, strerror(errno));
 
 	osmo_fd_setup(&g_api_listen_fd, fd, OSMO_FD_READ, api_listen_cb, NULL, 0);
 	if (osmo_fd_register(&g_api_listen_fd) != 0) {
