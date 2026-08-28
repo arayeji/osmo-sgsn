@@ -108,6 +108,8 @@ static const struct rate_ctr_group_desc sgsn_ctrg_desc = {
 static const struct osmo_stat_item_desc sgsn_stat_item_description[] = {
 	[SGSN_STAT_IU_PEERS_TOTAL]	= { "iu_peers:total", "Total Iu peers (RNC, HNBGW) seen since startup", OSMO_STAT_ITEM_NO_UNIT, 4, 0},
 	[SGSN_STAT_IU_PEERS_ACTIVE]	= { "iu_peers:active", "Currently active Iu peers (RANAP ready)", OSMO_STAT_ITEM_NO_UNIT, 4, 0},
+	[SGSN_STAT_MM_CONTEXTS]		= { "mm_contexts:current", "MM contexts currently allocated", OSMO_STAT_ITEM_NO_UNIT, 4, 0},
+	[SGSN_STAT_PDP_CONTEXTS]	= { "pdp_contexts:current", "PDP contexts currently allocated", OSMO_STAT_ITEM_NO_UNIT, 4, 0},
 };
 
 static const struct osmo_stat_item_group_desc sgsn_statg_desc = {

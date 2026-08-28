@@ -93,6 +93,7 @@ struct sgsn_pdp_ctx *sgsn_pdp_ctx_alloc(struct sgsn_mm_ctx *mm,
 	llist_add(&pctx->list, &mm->pdp_list);
 	sgsn_ggsn_ctx_add_pdp(pctx->ggsn, pctx);
 	llist_add(&pctx->g_list, &sgsn->pdp_list);
+	sgsn_stat_inc(SGSN_STAT_PDP_CONTEXTS, 1);
 
 	return pctx;
 }
@@ -153,6 +154,7 @@ void sgsn_pdp_ctx_free(struct sgsn_pdp_ctx *pdp)
 	if (pdp->ggsn)
 		sgsn_ggsn_ctx_remove_pdp(pdp->ggsn, pdp);
 	llist_del(&pdp->g_list);
+	sgsn_stat_dec(SGSN_STAT_PDP_CONTEXTS, 1);
 
 	/* _if_ we still have a library handle, at least set it to NULL
 	 * to avoid any dereferences of the now-deleted PDP context from

@@ -211,6 +211,8 @@ extern void *tall_sgsn_ctx;
 enum {
 	SGSN_STAT_IU_PEERS_TOTAL,
 	SGSN_STAT_IU_PEERS_ACTIVE,
+	SGSN_STAT_MM_CONTEXTS,
+	SGSN_STAT_PDP_CONTEXTS,
 };
 static inline void sgsn_stat_inc(unsigned int idx, int32_t value)
 {

@@ -133,8 +133,10 @@ static bool sgsn_mm_ctx_list_linked(const struct sgsn_mm_ctx *mm)
 static void sgsn_mm_ctx_unlink(struct sgsn_mm_ctx *mm)
 {
 	sgsn_mm_ctx_hash_remove(mm);
-	if (sgsn_mm_ctx_list_linked(mm))
+	if (sgsn_mm_ctx_list_linked(mm)) {
 		llist_del_init(&mm->list);
+		sgsn_stat_dec(SGSN_STAT_MM_CONTEXTS, 1);
+	}
 }
 
 static bool sgsn_mm_ctx_list_active(const struct sgsn_mm_ctx *mm)
@@ -329,6 +331,7 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_alloc(uint32_t rate_ctr_id)
 	INIT_HLIST_NODE(&ctx->hlist_by_tlli_new);
 
 	llist_add(&ctx->list, &sgsn->mm_list);
+	sgsn_stat_inc(SGSN_STAT_MM_CONTEXTS, 1);
 
 	return ctx;
 

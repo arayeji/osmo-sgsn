@@ -121,7 +121,7 @@ const struct value_string gtp_cause_strs[] = {
 
 static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size_t len)
 {
-	union gtpie_member *ie[GTPIE_SIZE] = { NULL };
+	union gtpie_member **ie;
 	uint64_t imsi64 = 0;
 	const char *imsi_str;
 	unsigned int payload_off;
@@ -131,36 +131,43 @@ static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size
 	if (!data || !len)
 		return;
 
+	ie = talloc_zero_array(tall_sgsn_ctx, union gtpie_member *, GTPIE_SIZE);
+	if (!ie)
+		return;
+
 	if (version == 1) {
 		if (len < GTP1_HEADER_SIZE_SHORT)
-			return;
+			goto out;
 		gh1 = (struct gtp1_header_short *)data;
 		payload_off = (gh1->flags & GTP1HDR_F_SEQ) ?
 			GTP1_HEADER_SIZE_LONG : GTP1_HEADER_SIZE_SHORT;
 		proto = "gtp1c";
 	} else if (version == 0) {
 		if (len < GTP0_HEADER_SIZE)
-			return;
+			goto out;
 		payload_off = GTP0_HEADER_SIZE;
 		proto = "gtp0";
 	} else {
-		return;
+		goto out;
 	}
 
 	if (len <= payload_off)
-		return;
+		goto out;
 
 	if (gtpie_decaps(ie, version, data + payload_off, len - payload_off) < 0)
-		return;
+		goto out;
 
 	if (gtpie_gettv8(ie, GTPIE_IMSI, 0, &imsi64) != 0)
-		return;
+		goto out;
 
 	imsi_str = imsi_gtp2str(&imsi64);
 	if (!imsi_str || !imsi_str[0])
-		return;
+		goto out;
 
 	sgsn_api_trace_packet(imsi_str, proto, tx, data, len);
+
+out:
+	talloc_free(ie);
 }
 
 static void cb_gtp_packet_trace(struct gsn_t *gsn, void *cbp, bool tx,
