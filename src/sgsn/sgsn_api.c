@@ -445,6 +445,7 @@ static char *build_links_json(void)
 static void api_client_close(struct api_conn *ac);
 static void api_conn_idle_timeout(void *data);
 static int api_write_all(int fd, const char *data, size_t len);
+static int api_client_cb(struct osmo_fd *ofd, unsigned int what);
 
 static void api_accept_pending(void)
 {
