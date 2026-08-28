@@ -884,7 +884,6 @@ static void handle_request(struct api_conn *ac, const char *req)
 	char method[16] = {};
 	char path[256] = {};
 	char *body = NULL;
-	const char *imsi;
 	struct sgsn_mm_ctx *mm;
 
 	if (!parse_path(req, method, sizeof(method), path, sizeof(path))) {
