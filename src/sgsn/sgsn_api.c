@@ -23,7 +23,7 @@
 #include <osmocom/core/rate_ctr.h>
 #include <osmocom/core/stat_item.h>
 #include <osmocom/core/base64.h>
-#include <osmocom/gtp/gsn.h>
+#include <osmocom/gtp/gtp.h>
 #include <osmocom/gtp/pdp.h>
 #include <osmocom/gsm/apn.h>
 #include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
@@ -484,29 +484,7 @@ static void api_mm_ran_info(const struct sgsn_mm_ctx *mm, uint32_t *id_out,
 }
 
 static char *api_append_mm_pdp_json(char *cur, char *start, size_t *space,
-				    const struct sgsn_pdp_ctx *pdp)
-{
-	char esc[256];
-	char addr[INET6_ADDRSTRLEN + 8];
-	char apnbuf[APN_MAXLEN + 1];
-
-	if (!pdp)
-		return cur;
-
-	cur = json_append(cur, start, space, "{\"nsapi\":%u,\"sapi\":%u,\"ti\":%u,",
-			  pdp->nsapi, pdp->sapi, pdp->ti);
-	if (pdp->lib && pdp->lib->apn_use.l > 0) {
-		osmo_apn_to_str(apnbuf, pdp->lib->apn_use.v, pdp->lib->apn_use.l);
-		json_escape(apnbuf, esc, sizeof(esc));
-		cur = json_append(cur, start, space, "\"apn\":\"%s\",", esc);
-		pdp_addr_str(pdp->lib->eua.v, pdp->lib->eua.l, addr, sizeof(addr));
-		json_escape(addr, esc, sizeof(esc));
-		cur = json_append(cur, start, space, "\"pdp_address\":\"%s\"}", esc);
-	} else {
-		cur = json_append(cur, start, space, "\"apn\":\"\",\"pdp_address\":\"\"}");
-	}
-	return cur;
-}
+				    const struct sgsn_pdp_ctx *pdp);
 
 static unsigned api_mm_pdp_count(const struct sgsn_mm_ctx *mm)
 {
@@ -631,28 +609,96 @@ static bool api_pdp_imsi_matches(const struct sgsn_pdp_ctx *pdp, const char *pre
 	return strncmp(pdp->mm->imsi, prefix, plen) == 0;
 }
 
-static char *api_append_pdp_json(char *cur, char *start, size_t *space,
-				 const struct sgsn_pdp_ctx *pdp)
+static void api_gtp_ip_str(struct ul16_t *ul, char *out, size_t out_len)
+{
+	struct in_addr ia;
+
+	if (!out || out_len == 0)
+		return;
+	out[0] = '\0';
+	if (!ul || gsna2in_addr(&ia, ul) != 0)
+		return;
+	inet_ntop(AF_INET, &ia, out, out_len);
+}
+
+static char *api_append_pdp_gtp_json(char *cur, char *start, size_t *space,
+				     const struct sgsn_pdp_ctx *pdp)
+{
+	char lc_ip[INET_ADDRSTRLEN];
+	char lu_ip[INET_ADDRSTRLEN];
+	char rc_ip[INET_ADDRSTRLEN];
+	char ru_ip[INET_ADDRSTRLEN];
+	struct pdp_t *lib;
+
+	if (!pdp || !pdp->lib)
+		return json_append(cur, start, space, "\"gtp\":null");
+
+	lib = pdp->lib;
+	api_gtp_ip_str(&lib->gsnlc, lc_ip, sizeof(lc_ip));
+	api_gtp_ip_str(&lib->gsnlu, lu_ip, sizeof(lu_ip));
+	api_gtp_ip_str(&lib->gsnrc, rc_ip, sizeof(rc_ip));
+	api_gtp_ip_str(&lib->gsnru, ru_ip, sizeof(ru_ip));
+
+	cur = json_append(cur, start, space,
+			  "\"gtp\":{\"version\":%u,"
+			  "\"local\":{\"control_ip\":\"%s\",\"control_teid\":\"0x%08x\","
+			  "\"user_ip\":\"%s\",\"user_teid\":\"0x%08x\"",
+			  lib->version, lc_ip, lib->teic_own, lu_ip, lib->teid_own);
+	if (pdp->sgsn_teid_own && pdp->sgsn_teid_own != lib->teid_own) {
+		cur = json_append(cur, start, space, ",\"sgsn_user_teid\":\"0x%08x\"",
+				  pdp->sgsn_teid_own);
+	}
+	cur = json_append(cur, start, space,
+			  "},\"remote\":{\"control_ip\":\"%s\",\"control_teid\":\"0x%08x\","
+			  "\"user_ip\":\"%s\",\"user_teid\":\"0x%08x\"}}",
+			  rc_ip, lib->teic_gn, ru_ip, lib->teid_gn);
+	return cur;
+}
+
+static char *api_append_pdp_entry_json(char *cur, char *start, size_t *space,
+				       const struct sgsn_pdp_ctx *pdp, bool include_imsi)
 {
 	char esc[256];
 	char addr[INET6_ADDRSTRLEN + 8];
 	char apnbuf[APN_MAXLEN + 1];
-	const char *imsi = (pdp->mm && pdp->mm->imsi[0]) ? pdp->mm->imsi : "";
 
-	json_escape(imsi, esc, sizeof(esc));
-	cur = json_append(cur, start, space, "{\"imsi\":\"%s\",\"nsapi\":%u,\"sapi\":%u,\"ti\":%u,",
-			  esc, pdp->nsapi, pdp->sapi, pdp->ti);
+	if (!pdp)
+		return cur;
+
+	cur = json_append(cur, start, space, "{");
+	if (include_imsi) {
+		const char *imsi = (pdp->mm && pdp->mm->imsi[0]) ? pdp->mm->imsi : "";
+
+		json_escape(imsi, esc, sizeof(esc));
+		cur = json_append(cur, start, space, "\"imsi\":\"%s\",", esc);
+	}
+	cur = json_append(cur, start, space, "\"nsapi\":%u,\"sapi\":%u,\"ti\":%u,",
+			  pdp->nsapi, pdp->sapi, pdp->ti);
 	if (pdp->lib && pdp->lib->apn_use.l > 0) {
 		osmo_apn_to_str(apnbuf, pdp->lib->apn_use.v, pdp->lib->apn_use.l);
 		json_escape(apnbuf, esc, sizeof(esc));
 		cur = json_append(cur, start, space, "\"apn\":\"%s\",", esc);
 		pdp_addr_str(pdp->lib->eua.v, pdp->lib->eua.l, addr, sizeof(addr));
 		json_escape(addr, esc, sizeof(esc));
-		cur = json_append(cur, start, space, "\"pdp_address\":\"%s\"}", esc);
+		cur = json_append(cur, start, space, "\"pdp_address\":\"%s\",", esc);
 	} else {
-		cur = json_append(cur, start, space, "\"apn\":\"\",\"pdp_address\":\"\"}");
+		cur = json_append(cur, start, space, "\"apn\":\"\",\"pdp_address\":\"\",");
 	}
+	cur = api_append_pdp_gtp_json(cur, start, space, pdp);
+	cur = json_append(cur, start, space, "}");
 	return cur;
+}
+
+static char *api_append_mm_pdp_json(char *cur, char *start, size_t *space,
+				    const struct sgsn_pdp_ctx *pdp)
+{
+	return api_append_pdp_entry_json(cur, start, space, pdp, false);
+}
+
+static char *api_append_pdp_json(char *cur, char *start, size_t *space,
+				 const struct sgsn_pdp_ctx *pdp)
+{
+	return api_append_pdp_entry_json(cur, start, space, pdp, true);
 }
 
 static char *build_pdp_list_json(const struct api_pdp_list_query *query)
