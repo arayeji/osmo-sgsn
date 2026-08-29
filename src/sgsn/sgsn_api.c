@@ -52,6 +52,7 @@
 #define SGSN_API_PDP_DEFAULT_LIMIT 100
 #define SGSN_API_PDP_MAX_LIMIT 1000
 #define SGSN_API_PDP_MAX_SCAN 65535
+#define SGSN_API_MM_MAX_PDP 16
 
 struct api_pdp_list_query {
 	char imsi_prefix[GSM23003_IMSI_MAX_DIGITS + 1];
@@ -418,6 +419,176 @@ static bool api_query_get(const char *query, const char *key, char *val, size_t 
 		query = amp + 1;
 	}
 	return false;
+}
+
+static bool api_valid_imsi(const char *imsi)
+{
+	size_t n = 0;
+	const char *p;
+
+	if (!imsi || !imsi[0])
+		return false;
+	for (p = imsi; *p; p++, n++) {
+		if (*p < '0' || *p > '9')
+			return false;
+	}
+	return n >= 5 && n <= GSM23003_IMSI_MAX_DIGITS;
+}
+
+static bool api_parse_include_pdp_query(const char *query, bool *include_pdp)
+{
+	char val[16];
+
+	if (!include_pdp)
+		return false;
+	*include_pdp = true;
+	if (!api_query_get(query, "include_pdp", val, sizeof(val)))
+		return true;
+	if (!strcasecmp(val, "false") || !strcasecmp(val, "0") || !strcasecmp(val, "no")) {
+		*include_pdp = false;
+		return true;
+	}
+	if (!strcasecmp(val, "true") || !strcasecmp(val, "1") || !strcasecmp(val, "yes")) {
+		*include_pdp = true;
+		return true;
+	}
+	return false;
+}
+
+static void api_mm_ran_info(const struct sgsn_mm_ctx *mm, uint32_t *id_out,
+			    const char **state_out)
+{
+	*id_out = 0;
+	*state_out = "unknown";
+
+	if (!mm)
+		return;
+
+	switch (mm->ran_type) {
+	case MM_CTX_T_UTRAN_Iu:
+#if BUILD_IU
+		if (mm->iu.ue_ctx)
+			*id_out = mm->iu.ue_ctx->conn_id;
+		if (mm->iu.mm_state_fsm)
+			*state_out = osmo_fsm_inst_state_name(mm->iu.mm_state_fsm);
+#endif
+		break;
+	case MM_CTX_T_GERAN_Gb:
+		*id_out = mm->gb.tlli;
+		if (mm->gb.mm_state_fsm)
+			*state_out = osmo_fsm_inst_state_name(mm->gb.mm_state_fsm);
+		break;
+	default:
+		break;
+	}
+}
+
+static char *api_append_mm_pdp_json(char *cur, char *start, size_t *space,
+				    const struct sgsn_pdp_ctx *pdp)
+{
+	char esc[256];
+	char addr[INET6_ADDRSTRLEN + 8];
+	char apnbuf[APN_MAXLEN + 1];
+
+	if (!pdp)
+		return cur;
+
+	cur = json_append(cur, start, space, "{\"nsapi\":%u,\"sapi\":%u,\"ti\":%u,",
+			  pdp->nsapi, pdp->sapi, pdp->ti);
+	if (pdp->lib && pdp->lib->apn_use.l > 0) {
+		osmo_apn_to_str(apnbuf, pdp->lib->apn_use.v, pdp->lib->apn_use.l);
+		json_escape(apnbuf, esc, sizeof(esc));
+		cur = json_append(cur, start, space, "\"apn\":\"%s\",", esc);
+		pdp_addr_str(pdp->lib->eua.v, pdp->lib->eua.l, addr, sizeof(addr));
+		json_escape(addr, esc, sizeof(esc));
+		cur = json_append(cur, start, space, "\"pdp_address\":\"%s\"}", esc);
+	} else {
+		cur = json_append(cur, start, space, "\"apn\":\"\",\"pdp_address\":\"\"}");
+	}
+	return cur;
+}
+
+static unsigned api_mm_pdp_count(const struct sgsn_mm_ctx *mm)
+{
+	struct sgsn_pdp_ctx *pdp;
+	unsigned count = 0;
+
+	if (!mm)
+		return 0;
+
+	llist_for_each_entry(pdp, &mm->pdp_list, list) {
+		count++;
+		if (count >= SGSN_API_MM_MAX_PDP)
+			break;
+	}
+	return count;
+}
+
+static char *build_mm_json(const struct sgsn_mm_ctx *mm, bool include_pdp)
+{
+	char *start, *cur;
+	size_t space;
+	char esc[256];
+	struct sgsn_pdp_ctx *pdp;
+	uint32_t ran_id = 0;
+	const char *mm_state = "unknown";
+	const char *gmm_state;
+	unsigned pdp_n = 0;
+	bool first_pdp;
+
+	if (!mm)
+		return NULL;
+
+	start = talloc_zero_size(g_api_ctx, 64 * 1024);
+	if (!start)
+		return NULL;
+	cur = start;
+	space = 64 * 1024;
+
+	api_mm_ran_info(mm, &ran_id, &mm_state);
+	gmm_state = mm->gmm_fsm ? osmo_fsm_inst_state_name(mm->gmm_fsm) : "unknown";
+
+	json_escape(mm->imsi, esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "{\"imsi\":\"%s\",", esc);
+	json_escape(mm->imei, esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "\"imei\":\"%s\",", esc);
+	json_escape(mm->msisdn, esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "\"msisdn\":\"%s\",", esc);
+	cur = json_append(cur, start, &space, "\"p_tmsi\":\"%08x\",", mm->p_tmsi);
+	cur = json_append(cur, start, &space, "\"tlli\":\"%08x\",", ran_id);
+	json_escape(gmm_state, esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "\"gmm_state\":\"%s\",", esc);
+	json_escape(osmo_rai_name2(&mm->ra), esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "\"routing_area\":\"%s\",", esc);
+	cur = json_append(cur, start, &space, "\"cell_id\":%u,", mm->gb.cell_id);
+	json_escape(mm_state, esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "\"mm_state\":\"%s\",", esc);
+	json_escape(get_value_string(sgsn_ran_type_names, mm->ran_type), esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "\"ran_type\":\"%s\",", esc);
+	json_escape(mm->hlr, esc, sizeof(esc));
+	cur = json_append(cur, start, &space, "\"hlr\":\"%s\",", esc);
+
+	if (!include_pdp) {
+		cur = json_append(cur, start, &space, "\"pdp_count\":%u}",
+				  api_mm_pdp_count(mm));
+		return start;
+	}
+
+	cur = json_append(cur, start, &space, "\"pdp_contexts\":[");
+	first_pdp = true;
+	llist_for_each_entry(pdp, &mm->pdp_list, list) {
+		if (pdp_n >= SGSN_API_MM_MAX_PDP)
+			break;
+		if (!first_pdp)
+			cur = json_append(cur, start, &space, ",");
+		first_pdp = false;
+		cur = api_append_mm_pdp_json(cur, start, &space, pdp);
+		if (space == 0)
+			break;
+		pdp_n++;
+	}
+	cur = json_append(cur, start, &space, "]}");
+	return start;
 }
 
 static int api_parse_pdp_query(const char *query, struct api_pdp_list_query *out)
@@ -1000,20 +1171,6 @@ static void api_trace_log_output(struct log_target *tgt, unsigned int level, con
 	}
 }
 
-static bool api_valid_imsi(const char *imsi)
-{
-	const char *p;
-	size_t n = 0;
-
-	if (!imsi || !imsi[0])
-		return false;
-	for (p = imsi; *p; p++, n++) {
-		if (*p < '0' || *p > '9')
-			return false;
-	}
-	return n >= 5 && n <= 15;
-}
-
 /* Returns 0 on success (*out set), negative errno otherwise. */
 static int api_trace_enable(const char *imsi, struct sgsn_api_trace **out)
 {
@@ -1294,9 +1451,34 @@ static void handle_request(struct api_conn *ac, const char *req)
 			api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
 				 "application/json", body ? body : "{\"error\":\"oom\"}");
 		}
-	} else if (!strncmp(method, "GET", 3) && !strncmp(path, "/v1/contexts/mm/", 16)) {
-		api_send(ac, 503, "Service Unavailable", "application/json",
-			 "{\"error\":\"disabled for stability; use /v1/contexts/counts\"}");
+	} else if (!strcmp(method, "GET") && !strncmp(path, "/v1/contexts/mm/", 16)) {
+		const char *imsi = path + 16;
+		bool include_pdp = true;
+
+		if (!imsi[0] || strchr(imsi, '/')) {
+			api_send(ac, 404, "Not Found", "application/json",
+				 "{\"error\":\"unknown endpoint\"}");
+			return;
+		}
+		if (!api_valid_imsi(imsi)) {
+			api_send(ac, 400, "Bad Request", "application/json",
+				 "{\"error\":\"invalid IMSI\"}");
+			return;
+		}
+		if (!api_parse_include_pdp_query(query, &include_pdp)) {
+			api_send(ac, 400, "Bad Request", "application/json",
+				 "{\"error\":\"invalid include_pdp query; use true or false\"}");
+			return;
+		}
+		mm = sgsn_mm_ctx_by_imsi(imsi);
+		if (!mm) {
+			api_send(ac, 404, "Not Found", "application/json",
+				 "{\"error\":\"mm context not found\"}");
+			return;
+		}
+		body = build_mm_json(mm, include_pdp);
+		api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+			 "application/json", body ? body : "{\"error\":\"oom\"}");
 	} else if (!strncmp(method, "POST", 4) && !strncmp(path, "/v1/subscribers/", 16)) {
 		const char *suffix = path + 16;
 		const char *action = strchr(suffix, '/');
