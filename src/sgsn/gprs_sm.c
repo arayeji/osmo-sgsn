@@ -250,6 +250,9 @@ int gsm48_tx_gsm_act_pdp_acc(struct sgsn_pdp_ctx *pdp)
 		if (pdp->lib->eua.v[1] == PDP_TYPE_N_IETF_IPv6)
 			sm_cause = GSM_CAUSE_PDP_TYPE_IPV6_ONLY;
 		msgb_tlv_put(msg, GSM48_IE_GSM_SM_CAUSE, 1, &sm_cause);
+		LOGMMCTXP(LOGL_NOTICE, pdp->mm,
+			  "PDP(%u) ACTIVATE PDP ACK incl. SM cause #%u (GTP create cause %u)\n",
+			  pdp->ti, sm_cause, pdp->gtp_create_cause);
 	}
 
 	/* Optional: Packet Flow Identifier */

@@ -637,6 +637,12 @@ static int create_pdp_conf(struct pdp_t *pdp, void *cbp, int cause)
 
 	pctx->gtp_create_cause = (uint8_t)cause;
 
+	if (cause == GTPCAUSE_NEW_PDP_NET_PREF ||
+	    cause == GTPCAUSE_NEW_PDP_ADDR_BEAR)
+		LOGMMCTXP(LOGL_NOTICE, pctx->mm,
+			  "PDP(%u) CREATE PDP accepted GTP cause %u(%s), stored for SM mapping\n",
+			  pctx->ti, cause, get_value_string(gtp_cause_strs, cause));
+
 	if (pctx->mm->ran_type == MM_CTX_T_GERAN_Gb) {
 		/* Activate the SNDCP layer */
 		sndcp_sm_activate_ind(&pctx->mm->gb.llme->lle[pctx->sapi], pctx->nsapi);
