@@ -480,6 +480,14 @@ int gmm_attach_timer_cb(struct osmo_fsm_inst *fi)
 
 	ctx->num_T_exp++;
 
+#ifdef BUILD_IU
+	if (ctx->ran_type == MM_CTX_T_UTRAN_Iu && fi->state != ST_ASK_VLR &&
+	    !ctx->iu.ue_ctx) {
+		osmo_fsm_inst_dispatch(fi, E_REJECT, (void *)GMM_DISCARD_MS_WITHOUT_REJECT);
+		return 0;
+	}
+#endif
+
 	switch(fi->state) {
 	case ST_ASK_VLR:
 		/* TODO: replace T3350 by a better timer or it's own
@@ -552,4 +560,19 @@ void gmm_att_req_free(struct sgsn_mm_ctx *mm) {
 		msgb_free(mm->gmm_att_req.attach_req);
 		mm->gmm_att_req.attach_req = NULL;
 	}
+}
+
+void gmm_att_req_abort_on_iu_loss(struct sgsn_mm_ctx *mm)
+{
+	struct osmo_fsm_inst *fi;
+
+	if (!mm || mm->ran_type != MM_CTX_T_UTRAN_Iu)
+		return;
+
+	fi = mm->gmm_att_req.fsm;
+	if (!fi || fi->state == ST_INIT || fi->state == ST_REJECT)
+		return;
+
+	osmo_timer_del(&fi->timer);
+	osmo_fsm_inst_dispatch(fi, E_REJECT, (void *)GMM_DISCARD_MS_WITHOUT_REJECT);
 }

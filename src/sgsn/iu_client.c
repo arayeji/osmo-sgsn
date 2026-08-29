@@ -40,6 +40,7 @@
 #include <osmocom/sgsn/gprs_ranap.h>
 #include <osmocom/sgsn/iu_client.h>
 #include <osmocom/sgsn/iu_rnc.h>
+#include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/sccp.h>
 #include <osmocom/sgsn/sgsn.h>
 
@@ -90,8 +91,14 @@ struct ranap_ue_conn_ctx *ue_conn_ctx_alloc(struct ranap_iu_rnc *rnc, uint32_t c
 
 void sgsn_ranap_iu_free_ue(struct ranap_ue_conn_ctx *ue_ctx)
 {
+	struct sgsn_mm_ctx *mm;
+
 	if (!ue_ctx)
 		return;
+
+	mm = sgsn_mm_ctx_by_ue_ctx(ue_ctx);
+	if (mm)
+		mm->iu.ue_ctx = NULL;
 
 	osmo_timer_del(&ue_ctx->release_timeout);
 	if (ue_ctx->rnc && ue_ctx->rnc->scu_iups && ue_ctx->rnc->scu_iups->scu)

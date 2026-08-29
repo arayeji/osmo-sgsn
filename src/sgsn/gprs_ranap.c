@@ -296,16 +296,35 @@ int sgsn_ranap_iu_event(struct ranap_ue_conn_ctx *ctx, enum ranap_iu_event_type 
 
 static int iu_ue_tx(struct ranap_ue_conn_ctx *uectx, struct msgb *msg)
 {
+	struct ranap_ue_conn_ctx *live;
+	struct sgsn_sccp_user_iups *scu_iups;
+	uint32_t conn_id;
+
 	if (!msg)
 		return -EINVAL;
-	if (!uectx || !uectx->rnc || !uectx->rnc->scu_iups) {
+	if (!uectx || !sgsn || !sgsn->sccp.scu_iups) {
 		LOGP(DRANAP, LOGL_ERROR,
-		     "Drop RANAP TX: missing UE/RNC/SCCP user (ue=%p rnc=%p)\n",
-		     uectx, uectx ? uectx->rnc : NULL);
+		     "Drop RANAP TX: missing UE/SCCP user (ue=%p)\n", uectx);
 		msgb_free(msg);
 		return -ENOTCONN;
 	}
-	return sgsn_scu_iups_tx_data_req(uectx->rnc->scu_iups, uectx->conn_id, msg);
+
+	scu_iups = sgsn->sccp.scu_iups;
+	conn_id = uectx->conn_id;
+	live = sgsn_scu_iups_ue_conn_ctx_find(scu_iups, conn_id);
+	if (!live) {
+		LOGP(DRANAP, LOGL_ERROR,
+		     "Drop RANAP TX: stale or unknown SCCP conn_id %u\n", conn_id);
+		msgb_free(msg);
+		return -ENOTCONN;
+	}
+	if (!live->rnc || !live->rnc->scu_iups) {
+		LOGP(DRANAP, LOGL_ERROR,
+		     "Drop RANAP TX: RNC/SCCP user gone for conn_id %u\n", conn_id);
+		msgb_free(msg);
+		return -ENOTCONN;
+	}
+	return sgsn_scu_iups_tx_data_req(live->rnc->scu_iups, live->conn_id, msg);
 }
 
 int sgsn_ranap_iu_tx_rab_ps_ass_req(struct ranap_ue_conn_ctx *ue_ctx,

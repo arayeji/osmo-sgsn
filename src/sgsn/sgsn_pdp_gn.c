@@ -14,6 +14,7 @@
 
 #if BUILD_IU
 
+#include <osmocom/sgsn/gprs_gmm_attach.h>
 #include <osmocom/sgsn/gprs_ranap.h>
 #include <osmocom/sgsn/iu_client.h>
 #include <osmocom/sgsn/sccp.h>
@@ -112,6 +113,8 @@ static void sgsn_mm_iu_handle_rnc_loss(struct sgsn_mm_ctx *mm)
 
 	if (!mm || mm->ran_type != MM_CTX_T_UTRAN_Iu)
 		return;
+
+	gmm_att_req_abort_on_iu_loss(mm);
 
 	sgsn_mm_iu_unreachable_timer_stop(mm);
 	fi = mm->iu.mm_state_fsm;

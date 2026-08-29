@@ -35,5 +35,6 @@ extern const struct value_string gmm_attach_req_fsm_event_names[];
 extern struct osmo_fsm gmm_attach_req_fsm;
 
 void gmm_att_req_free(struct sgsn_mm_ctx *mm);
+void gmm_att_req_abort_on_iu_loss(struct sgsn_mm_ctx *mm);
 
 #endif // GPRS_GMM_ATTACH_H
