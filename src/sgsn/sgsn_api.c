@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 #include <sys/socket.h>
@@ -48,6 +49,15 @@
 #define SGSN_API_MAX_CLIENTS 16
 #define SGSN_API_IDLE_SEC 5
 #define SGSN_API_POLL_MS 500
+#define SGSN_API_PDP_DEFAULT_LIMIT 100
+#define SGSN_API_PDP_MAX_LIMIT 1000
+#define SGSN_API_PDP_MAX_SCAN 65535
+
+struct api_pdp_list_query {
+	char imsi_prefix[GSM23003_IMSI_MAX_DIGITS + 1];
+	unsigned limit;
+	bool has_imsi_prefix;
+};
 
 struct api_conn {
 	int fd;
@@ -364,6 +374,165 @@ static char *build_counts_json(void)
 			       "{\"mm_context_count\":%u,\"pdp_context_count\":%u,\"active_pdp_count\":%u}",
 			       mm_count, pdp_count, pdp_count);
 	return json;
+}
+
+static bool api_valid_imsi_prefix(const char *prefix)
+{
+	size_t n = 0;
+	const char *p;
+
+	if (!prefix || !prefix[0])
+		return false;
+	for (p = prefix; *p; p++, n++) {
+		if (*p < '0' || *p > '9')
+			return false;
+	}
+	return n >= 1 && n <= GSM23003_IMSI_MAX_DIGITS;
+}
+
+static bool api_query_get(const char *query, const char *key, char *val, size_t val_len)
+{
+	size_t key_len;
+
+	if (!query || !key || !val || val_len == 0)
+		return false;
+
+	key_len = strlen(key);
+	while (*query) {
+		const char *amp = strchr(query, '&');
+		size_t pair_len = amp ? (size_t)(amp - query) : strlen(query);
+		const char *eq = memchr(query, '=', pair_len);
+
+		if (eq && (size_t)(eq - query) == key_len &&
+		    memcmp(query, key, key_len) == 0) {
+			size_t vlen = pair_len - key_len - 1;
+
+			if (vlen >= val_len)
+				vlen = val_len - 1;
+			memcpy(val, eq + 1, vlen);
+			val[vlen] = '\0';
+			return true;
+		}
+		if (!amp)
+			break;
+		query = amp + 1;
+	}
+	return false;
+}
+
+static int api_parse_pdp_query(const char *query, struct api_pdp_list_query *out)
+{
+	char val[64];
+
+	OSMO_ASSERT(out);
+	memset(out, 0, sizeof(*out));
+	out->limit = SGSN_API_PDP_DEFAULT_LIMIT;
+
+	if (api_query_get(query, "imsi_prefix", val, sizeof(val)) ||
+	    api_query_get(query, "imsi", val, sizeof(val))) {
+		if (!api_valid_imsi_prefix(val))
+			return -EINVAL;
+		osmo_strlcpy(out->imsi_prefix, val, sizeof(out->imsi_prefix));
+		out->has_imsi_prefix = true;
+	}
+
+	if (api_query_get(query, "limit", val, sizeof(val))) {
+		char *end = NULL;
+		unsigned long lim = strtoul(val, &end, 10);
+
+		if (!val[0] || (end && *end != '\0') || lim == 0 || lim > SGSN_API_PDP_MAX_LIMIT)
+			return -EINVAL;
+		out->limit = (unsigned)lim;
+	}
+
+	return 0;
+}
+
+static bool api_pdp_imsi_matches(const struct sgsn_pdp_ctx *pdp, const char *prefix)
+{
+	size_t plen;
+
+	if (!prefix || !prefix[0])
+		return true;
+	if (!pdp || !pdp->mm || !pdp->mm->imsi[0])
+		return false;
+	plen = strlen(prefix);
+	return strncmp(pdp->mm->imsi, prefix, plen) == 0;
+}
+
+static char *api_append_pdp_json(char *cur, char *start, size_t *space,
+				 const struct sgsn_pdp_ctx *pdp)
+{
+	char esc[256];
+	char addr[INET6_ADDRSTRLEN + 8];
+	char apnbuf[APN_MAXLEN + 1];
+	const char *imsi = (pdp->mm && pdp->mm->imsi[0]) ? pdp->mm->imsi : "";
+
+	json_escape(imsi, esc, sizeof(esc));
+	cur = json_append(cur, start, space, "{\"imsi\":\"%s\",\"nsapi\":%u,\"sapi\":%u,\"ti\":%u,",
+			  esc, pdp->nsapi, pdp->sapi, pdp->ti);
+	if (pdp->lib && pdp->lib->apn_use.l > 0) {
+		osmo_apn_to_str(apnbuf, pdp->lib->apn_use.v, pdp->lib->apn_use.l);
+		json_escape(apnbuf, esc, sizeof(esc));
+		cur = json_append(cur, start, space, "\"apn\":\"%s\",", esc);
+		pdp_addr_str(pdp->lib->eua.v, pdp->lib->eua.l, addr, sizeof(addr));
+		json_escape(addr, esc, sizeof(esc));
+		cur = json_append(cur, start, space, "\"pdp_address\":\"%s\"}", esc);
+	} else {
+		cur = json_append(cur, start, space, "\"apn\":\"\",\"pdp_address\":\"\"}");
+	}
+	return cur;
+}
+
+static char *build_pdp_list_json(const struct api_pdp_list_query *query)
+{
+	struct sgsn_pdp_ctx *pdp;
+	char *items, *cur, *result;
+	size_t space;
+	unsigned returned = 0, scanned = 0;
+	bool first = true;
+	char prefix_esc[32];
+
+	if (!sgsn || !query)
+		return NULL;
+
+	items = talloc_zero_size(g_api_ctx, 256 * 1024);
+	if (!items)
+		return NULL;
+	cur = items;
+	space = 256 * 1024;
+
+	llist_for_each_entry(pdp, &sgsn->pdp_list, g_list) {
+		if (++scanned > SGSN_API_PDP_MAX_SCAN)
+			break;
+		if (!pdp->mm)
+			continue;
+		if (query->has_imsi_prefix && !api_pdp_imsi_matches(pdp, query->imsi_prefix))
+			continue;
+		if (returned >= query->limit)
+			break;
+
+		if (!first)
+			cur = json_append(cur, items, &space, ",");
+		first = false;
+		cur = api_append_pdp_json(cur, items, &space, pdp);
+		if (space == 0)
+			break;
+		returned++;
+	}
+
+	if (query->has_imsi_prefix) {
+		json_escape(query->imsi_prefix, prefix_esc, sizeof(prefix_esc));
+		result = talloc_asprintf(g_api_ctx,
+					 "{\"count\":%u,\"limit\":%u,\"imsi_prefix\":\"%s\",\"pdp_contexts\":[%s]}",
+					 returned, query->limit, prefix_esc, items);
+	} else {
+		result = talloc_asprintf(g_api_ctx,
+					 "{\"count\":%u,\"limit\":%u,\"pdp_contexts\":[%s]}",
+					 returned, query->limit, items);
+	}
+	talloc_free(items);
+	return result;
 }
 
 static char *build_links_json(void)
@@ -732,10 +901,10 @@ static bool auth_ok(const char *hdr)
 }
 
 static bool parse_path(const char *req, char *method, size_t method_len,
-		       char *path, size_t path_len)
+		       char *path, size_t path_len, char *query, size_t query_len)
 {
-	const char *sp1, *sp2, *eol;
-	size_t mlen, plen;
+	const char *sp1, *sp2, *eol, *qmark;
+	size_t mlen, plen, path_only;
 
 	eol = strstr(req, "\r\n");
 	if (!eol)
@@ -759,8 +928,28 @@ static bool parse_path(const char *req, char *method, size_t method_len,
 	plen = (size_t)(sp2 - (sp1 + 1));
 	if (plen == 0 || plen >= path_len)
 		return false;
-	memcpy(path, sp1 + 1, plen);
-	path[plen] = '\0';
+
+	qmark = memchr(sp1 + 1, '?', plen);
+	if (qmark) {
+		path_only = (size_t)(qmark - (sp1 + 1));
+		if (path_only == 0 || path_only >= path_len)
+			return false;
+		memcpy(path, sp1 + 1, path_only);
+		path[path_only] = '\0';
+		if (query && query_len > 0) {
+			size_t qlen = plen - path_only - 1;
+
+			if (qlen >= query_len)
+				qlen = query_len - 1;
+			memcpy(query, qmark + 1, qlen);
+			query[qlen] = '\0';
+		}
+	} else {
+		memcpy(path, sp1 + 1, plen);
+		path[plen] = '\0';
+		if (query && query_len > 0)
+			query[0] = '\0';
+	}
 	return path[0] == '/';
 }
 
@@ -1054,10 +1243,12 @@ static void handle_request(struct api_conn *ac, const char *req)
 {
 	char method[16] = {};
 	char path[256] = {};
+	char query[512] = {};
 	char *body = NULL;
 	struct sgsn_mm_ctx *mm;
 
-	if (!parse_path(req, method, sizeof(method), path, sizeof(path))) {
+	if (!parse_path(req, method, sizeof(method), path, sizeof(path),
+			query, sizeof(query))) {
 		api_send(ac, 400, "Bad Request", NULL, NULL);
 		return;
 	}
@@ -1092,8 +1283,17 @@ static void handle_request(struct api_conn *ac, const char *req)
 		api_send(ac, 503, "Service Unavailable", "application/json",
 			 "{\"error\":\"disabled for stability; use /v1/contexts/counts\"}");
 	} else if (!strcmp(method, "GET") && !strcmp(path, "/v1/contexts/pdp")) {
-		api_send(ac, 503, "Service Unavailable", "application/json",
-			 "{\"error\":\"disabled for stability; use /v1/contexts/counts\"}");
+		struct api_pdp_list_query pq;
+		int qrc = api_parse_pdp_query(query, &pq);
+
+		if (qrc < 0) {
+			api_send(ac, 400, "Bad Request", "application/json",
+				 "{\"error\":\"invalid query; use ?imsi_prefix=...&limit=N (limit 1-1000)\"}");
+		} else {
+			body = build_pdp_list_json(&pq);
+			api_send(ac, body ? 200 : 500, body ? "OK" : "Error",
+				 "application/json", body ? body : "{\"error\":\"oom\"}");
+		}
 	} else if (!strncmp(method, "GET", 3) && !strncmp(path, "/v1/contexts/mm/", 16)) {
 		api_send(ac, 503, "Service Unavailable", "application/json",
 			 "{\"error\":\"disabled for stability; use /v1/contexts/counts\"}");
