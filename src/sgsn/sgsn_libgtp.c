@@ -635,6 +635,8 @@ static int create_pdp_conf(struct pdp_t *pdp, void *cbp, int cause)
 		goto reject;
 	}
 
+	pctx->gtp_create_cause = (uint8_t)cause;
+
 	if (pctx->mm->ran_type == MM_CTX_T_GERAN_Gb) {
 		/* Activate the SNDCP layer */
 		sndcp_sm_activate_ind(&pctx->mm->gb.llme->lle[pctx->sapi], pctx->nsapi);

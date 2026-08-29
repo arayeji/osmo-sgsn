@@ -84,6 +84,9 @@ struct sgsn_pdp_ctx {
 	uint64_t		cdr_bytes_in;
 	uint64_t		cdr_bytes_out;
 	uint32_t		cdr_charging_id;
+
+	/* GTP Create PDP Context Response cause (e.g. 129 = new PDP type) */
+	uint8_t			gtp_create_cause;
 };
 
 #define LOGPDPCTXP(level, pdp, fmt, args...) \

@@ -45,6 +45,15 @@
 #include <osmocom/sgsn/gtp.h>
 #include <osmocom/sgsn/pdpctx.h>
 #include <osmocom/sgsn/mmctx.h>
+#include <osmocom/gtp/gtp.h>
+#include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
+
+/* TS 24.008 §9.5.2 IEI for optional SM cause in Activate PDP Accept */
+#define GSM48_IE_GSM_SM_CAUSE	0x39
+
+/* TS 24.008 §10.5.6.6a — not yet in libosmocore gsm48_gsm_cause enum */
+#define GSM_CAUSE_PDP_TYPE_IPV4_ONLY	50
+#define GSM_CAUSE_PDP_TYPE_IPV6_ONLY	51
 
 /* 3GPP TS 04.08 sec 6.1.3.4.3(.a) "Abnormal cases" */
 #define T339X_MAX_RETRANS 4
@@ -232,6 +241,16 @@ int gsm48_tx_gsm_act_pdp_acc(struct sgsn_pdp_ctx *pdp)
 	if (pdp->lib->pco_req.l)
 		msgb_tlv_put(msg, GSM48_IE_GSM_PROTO_CONF_OPT,
 			     pdp->lib->pco_req.l, pdp->lib->pco_req.v);
+
+	/* TS 29.060 Annex B: GTP #129 → SM #50/#51 from allocated address */
+	if (pdp->gtp_create_cause == GTPCAUSE_NEW_PDP_NET_PREF &&
+	    pdp->lib && pdp->lib->eua.l >= 2) {
+		uint8_t sm_cause = GSM_CAUSE_PDP_TYPE_IPV4_ONLY;
+
+		if (pdp->lib->eua.v[1] == PDP_TYPE_N_IETF_IPv6)
+			sm_cause = GSM_CAUSE_PDP_TYPE_IPV6_ONLY;
+		msgb_tlv_put(msg, GSM48_IE_GSM_SM_CAUSE, 1, &sm_cause);
+	}
 
 	/* Optional: Packet Flow Identifier */
 
