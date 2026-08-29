@@ -194,6 +194,36 @@ static int gsm48_tx_sm_status(struct sgsn_mm_ctx *mmctx, uint8_t cause)
 	return _tx_status(msg, cause, mmctx);
 }
 
+/* TS 29.060 Annex B + TS 24.008 §6.1.3.1.1: map to SM #50 / #51 */
+static bool act_pdp_acc_sm_cause_for_single_stack(const struct sgsn_pdp_ctx *pdp,
+						  uint8_t *sm_cause)
+{
+	uint8_t alloc_type;
+
+	if (!pdp->lib || pdp->lib->eua.l < 2)
+		return false;
+
+	alloc_type = pdp->lib->eua.v[1];
+
+	if (pdp->gtp_create_cause == GTPCAUSE_NEW_PDP_NET_PREF ||
+	    pdp->gtp_create_cause == GTPCAUSE_NEW_PDP_ADDR_BEAR)
+		goto map_from_alloc;
+
+	/* GGSN may return cause 128 with a downgraded single-stack address */
+	if (pdp->req_pdp_type != PDP_TYPE_N_IETF_IPv4v6)
+		return false;
+
+map_from_alloc:
+	if (alloc_type == PDP_TYPE_N_IETF_IPv6)
+		*sm_cause = GSM_CAUSE_PDP_TYPE_IPV6_ONLY;
+	else if (alloc_type == PDP_TYPE_N_IETF_IPv4)
+		*sm_cause = GSM_CAUSE_PDP_TYPE_IPV4_ONLY;
+	else
+		return false;
+
+	return true;
+}
+
 /* 3GPP TS 24.008 § 9.5.2: Activate PDP Context Accept */
 int gsm48_tx_gsm_act_pdp_acc(struct sgsn_pdp_ctx *pdp)
 {
@@ -242,17 +272,18 @@ int gsm48_tx_gsm_act_pdp_acc(struct sgsn_pdp_ctx *pdp)
 		msgb_tlv_put(msg, GSM48_IE_GSM_PROTO_CONF_OPT,
 			     pdp->lib->pco_req.l, pdp->lib->pco_req.v);
 
-	/* TS 29.060 Annex B: GTP #129 → SM #50/#51 from allocated address */
-	if (pdp->gtp_create_cause == GTPCAUSE_NEW_PDP_NET_PREF &&
-	    pdp->lib && pdp->lib->eua.l >= 2) {
-		uint8_t sm_cause = GSM_CAUSE_PDP_TYPE_IPV4_ONLY;
+	/* TS 29.060 Annex B: GTP #129/#130 → SM #50/#51 from allocated address */
+	{
+		uint8_t sm_cause;
 
-		if (pdp->lib->eua.v[1] == PDP_TYPE_N_IETF_IPv6)
-			sm_cause = GSM_CAUSE_PDP_TYPE_IPV6_ONLY;
-		msgb_tlv_put(msg, GSM48_IE_GSM_SM_CAUSE, 1, &sm_cause);
-		LOGMMCTXP(LOGL_NOTICE, pdp->mm,
-			  "PDP(%u) ACTIVATE PDP ACK incl. SM cause #%u (GTP create cause %u)\n",
-			  pdp->ti, sm_cause, pdp->gtp_create_cause);
+		if (act_pdp_acc_sm_cause_for_single_stack(pdp, &sm_cause)) {
+			msgb_tlv_put(msg, GSM48_IE_GSM_SM_CAUSE, 1, &sm_cause);
+			LOGMMCTXP(LOGL_NOTICE, pdp->mm,
+				  "PDP(%u) ACTIVATE PDP ACK incl. SM cause #%u "
+				  "(GTP create cause %u, req PDP type 0x%02x, alloc 0x%02x)\n",
+				  pdp->ti, sm_cause, pdp->gtp_create_cause,
+				  pdp->req_pdp_type, pdp->lib->eua.v[1]);
+		}
 	}
 
 	/* Optional: Packet Flow Identifier */

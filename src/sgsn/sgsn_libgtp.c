@@ -351,6 +351,8 @@ struct sgsn_pdp_ctx *sgsn_create_pdp_ctx(struct sgsn_ggsn_ctx *ggsn,
 	/* Highest 4 bits of first byte need to be set to 1, otherwise
 	 * the IE is identical with the 04.08 PDP Address IE */
 	pdp->eua.v[0] |= 0xf0;
+	if (pdp->eua.l >= 2)
+		pctx->req_pdp_type = pdp->eua.v[1];
 
 	/* APN name from GMM */
 	if (TLVP_PRESENT(tp, GSM48_IE_GSM_APN)) {

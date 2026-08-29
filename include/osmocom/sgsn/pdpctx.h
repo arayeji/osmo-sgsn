@@ -87,6 +87,8 @@ struct sgsn_pdp_ctx {
 
 	/* GTP Create PDP Context Response cause (e.g. 129 = new PDP type) */
 	uint8_t			gtp_create_cause;
+	/* PDP type number from Activate PDP Request (eua.v[1] at create time) */
+	uint8_t			req_pdp_type;
 };
 
 #define LOGPDPCTXP(level, pdp, fmt, args...) \
