@@ -99,6 +99,24 @@ struct apn_ctx *sgsn_apn_ctx_match(const char *name, const char *imsi)
 	return found_actx;
 }
 
+bool sgsn_apn_ctx_allow_any_for_imsi(const char *imsi)
+{
+	struct apn_ctx *actx;
+
+	llist_for_each_entry(actx, &sgsn->apn_list, list) {
+		size_t imsi_ref_len = strlen(actx->imsi_prefix);
+
+		if (imsi_ref_len == 0)
+			continue;
+		if (strncmp(actx->imsi_prefix, imsi, imsi_ref_len) != 0)
+			continue;
+		/* Only "apn *" (any APN), not "apn *suffix" routing patterns */
+		if (actx->name[0] == '*' && actx->name[1] == '\0')
+			return true;
+	}
+	return false;
+}
+
 struct apn_ctx *sgsn_apn_ctx_by_name(const char *name, const char *imsi_prefix)
 {
 	struct apn_ctx *actx;

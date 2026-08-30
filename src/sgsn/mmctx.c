@@ -44,6 +44,7 @@
 #include <osmocom/gtp/pdp.h>
 
 #include <osmocom/sgsn/gprs_subscriber.h>
+#include <osmocom/sgsn/apn.h>
 #include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/mmctx.h>
 #include <osmocom/sgsn/sgsn.h>
@@ -584,6 +585,30 @@ static void insert_extra(struct tlv_parsed *tp,
 	}
 }
 
+static void log_subscr_pdp_apns(struct sgsn_mm_ctx *mmctx, char *buf, size_t buf_len)
+{
+	struct sgsn_subscriber_pdp_data *pdp;
+	size_t pos = 0;
+	bool first = true;
+
+	buf[0] = '\0';
+	if (!mmctx->subscr || !mmctx->subscr->sgsn_data)
+		return;
+
+	llist_for_each_entry(pdp, &mmctx->subscr->sgsn_data->pdp_list, list) {
+		if (!first && pos + 2 < buf_len) {
+			buf[pos++] = ',';
+			buf[pos++] = ' ';
+			buf[pos] = '\0';
+		}
+		first = false;
+		osmo_strlcpy(buf + pos, pdp->apn_str, buf_len - pos);
+		pos = strlen(buf);
+		if (pos >= buf_len - 1)
+			break;
+	}
+}
+
 /**
  * The tlv_parsed tp parameter will be modified to insert a
  * OSMO_IE_GSM_SUB_QOS in case the data is available in the
@@ -619,6 +644,10 @@ struct sgsn_ggsn_ctx *sgsn_mm_ctx_find_ggsn_ctx(struct sgsn_mm_ctx *mmctx,
 	}
 
 	if (mmctx->subscr == NULL)
+		allow_any_apn = 1;
+
+	/* "apn * imsi-prefix …" in SGSN config allows any APN for that prefix */
+	if (!allow_any_apn && sgsn_apn_ctx_allow_any_for_imsi(mmctx->imsi))
 		allow_any_apn = 1;
 
 	if (strlen(req_apn_str) == 0 && !allow_any_apn) {
@@ -667,10 +696,13 @@ struct sgsn_ggsn_ctx *sgsn_mm_ctx_find_ggsn_ctx(struct sgsn_mm_ctx *mmctx,
 	}
 
 	if (!allow_any_apn && selected_apn_str == NULL) {
+		char sub_apns[256];
+
+		log_subscr_pdp_apns(mmctx, sub_apns, sizeof(sub_apns));
 		/* Access not granted */
 		LOGMMCTXP(LOGL_NOTICE, mmctx,
-			  "The requested APN '%s' is not allowed\n",
-			  req_apn_str);
+			  "The requested APN '%s' is not allowed (GSUP PDP: {%s})\n",
+			  req_apn_str, sub_apns[0] ? sub_apns : "none");
 		*gsm_cause = GSM_CAUSE_REQ_SERV_OPT_NOTSUB;
 		return NULL;
 	}

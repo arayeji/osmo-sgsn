@@ -1543,9 +1543,19 @@ static void test_ggsn_selection(void)
 	OSMO_ASSERT(ggc == NULL);
 	OSMO_ASSERT(gsm_cause == GSM_CAUSE_INV_MAND_INFO);
 
-	/* Add PDP data entry to subscriber */
-
+	/* SGSN "apn * imsi-prefix" allows any APN even without GSUP "*" */
+	actxs[3] = sgsn_apn_ctx_find_alloc("*", "123456");
+	actxs[3]->ggsn = ggcs[2];
 	osmo_strlcpy(pdp_data->apn_str, "Test.Apn", sizeof(pdp_data->apn_str));
+	tp.lv[GSM48_IE_GSM_APN].len =
+		osmo_apn_from_str(apn_enc, sizeof(apn_enc), "Other.Apn");
+	ggc = sgsn_mm_ctx_find_ggsn_ctx(ctx, &tp, &gsm_cause, apn_str);
+	OSMO_ASSERT(ggc != NULL);
+	OSMO_ASSERT(ggc->id == 2);
+	OSMO_ASSERT(strcmp(apn_str, "Other.Apn") == 0);
+	sgsn_apn_ctx_free(actxs[3]);
+
+	/* Add PDP data entry to subscriber */
 
 	tp.lv[GSM48_IE_GSM_APN].len =
 		osmo_apn_from_str(apn_enc, sizeof(apn_enc), "Test.Apn");
