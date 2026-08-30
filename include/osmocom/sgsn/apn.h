@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 
-#include <osmocom/core/linuxlist.h>>
+#include <osmocom/core/linuxlist.h>
 
 struct sgsn_ggsn_ctx;
 
