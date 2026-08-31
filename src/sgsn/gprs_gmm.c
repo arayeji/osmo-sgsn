@@ -42,6 +42,7 @@
 #include <osmocom/core/tdef.h>
 #include <osmocom/crypt/auth.h>
 #include <osmocom/crypt/utran_cipher.h>
+#include <osmocom/gsm/gsm23003.h>
 #include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
 
 #include <osmocom/gtp/pdp.h>
@@ -70,6 +71,29 @@
 
 #define PTMSI_ALLOC
 
+/* 3GPP TS 24.008 10.5.1.13 Equivalent PLMNs. Same IEI on Attach/RAU Accept. */
+#ifndef GSM48_IE_PLMN_LIST
+#define GSM48_IE_PLMN_LIST	0x4A
+#endif
+
+/* Encode configured equivalent PLMNs, skipping the registered/serving PLMN. */
+static void gsm48_msgb_put_equiv_plmn(struct msgb *msg,
+				      const struct osmo_plmn_id *list,
+				      unsigned int count,
+				      const struct osmo_plmn_id *serving)
+{
+	uint8_t buf[GSM_EPLMN_MAX * 3];
+	unsigned int n = 0, i;
+
+	for (i = 0; i < count && n < GSM_EPLMN_MAX; i++) {
+		if (serving && osmo_plmn_cmp(&list[i], serving) == 0)
+			continue;
+		osmo_plmn_to_bcd(&buf[n * 3], &list[i]);
+		n++;
+	}
+	if (n)
+		msgb_tlv_put(msg, GSM48_IE_PLMN_LIST, n * 3, buf);
+}
 
 /* Our implementation, should be kept in SGSN */
 
@@ -433,6 +457,10 @@ int gsm48_tx_gmm_att_ack(struct sgsn_mm_ctx *mm)
 
 	/* Optional: MS-identity (combined attach) */
 	/* Optional: GMM cause (partial attach result for combined attach) */
+
+	/* Optional: Equivalent PLMNs (3GPP TS 24.008 9.4.2 / 10.5.1.13) */
+	gsm48_msgb_put_equiv_plmn(msg, sgsn->cfg.eplmn, sgsn->cfg.eplmn_count,
+				  &mm->ra.lac.plmn);
 
 	/* Optional: Network feature support 10.5.5.23 */
 	/* msgb_v_put(msg, GSM48_IE_GMM_NET_FEAT_SUPPORT | 0x00);*/
@@ -1660,6 +1688,10 @@ static int gsm48_tx_gmm_ra_upd_ack(struct sgsn_mm_ctx *mm)
 	/* Optional: Negotiated READY timer value */
 	t = osmo_tdef_get(sgsn->cfg.T_defs, 3314, OSMO_TDEF_S, -1);
 	msgb_tv_put(msg, GSM48_IE_GMM_TIMER_READY, gprs_secs_to_tmr_floor(t));
+
+	/* Optional: Equivalent PLMNs (3GPP TS 24.008 9.4.15 / 10.5.1.13) */
+	gsm48_msgb_put_equiv_plmn(msg, sgsn->cfg.eplmn, sgsn->cfg.eplmn_count,
+				  &mm->ra.lac.plmn);
 
 	/* GMM cause */
 	/* PDP Context Status */

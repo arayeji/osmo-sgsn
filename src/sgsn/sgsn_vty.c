@@ -342,6 +342,13 @@ static int config_write_sgsn(struct vty *vty)
 	llist_for_each_entry(acl, &g_cfg->imsi_acl, list)
 		vty_out(vty, " imsi-acl add %s%s", acl->imsi, VTY_NEWLINE);
 
+	for (i = 0; i < (int)g_cfg->eplmn_count; i++) {
+		vty_out(vty, " equivalent-plmn %s %s%s",
+			osmo_mcc_name(g_cfg->eplmn[i].mcc),
+			osmo_mnc_name(g_cfg->eplmn[i].mnc, g_cfg->eplmn[i].mnc_3_digits),
+			VTY_NEWLINE);
+	}
+
 	if (llist_empty(&sgsn->apn_list))
 		vty_out(vty, " ! apn * ggsn 0%s", VTY_NEWLINE);
 	llist_for_each_entry(actx, &sgsn->apn_list, list) {
@@ -2076,6 +2083,72 @@ DEFUN(cfg_no_mme_mmei, cfg_no_mme_mmei_cmd,
 	return CMD_SUCCESS;
 }
 
+static int parse_eplmn_args(struct vty *vty, const char *mcc_str, const char *mnc_str,
+			    struct osmo_plmn_id *plmn)
+{
+	if (osmo_mcc_from_str(mcc_str, &plmn->mcc)) {
+		vty_out(vty, "%% Error decoding MCC: %s%s", mcc_str, VTY_NEWLINE);
+		return -1;
+	}
+	if (osmo_mnc_from_str(mnc_str, &plmn->mnc, &plmn->mnc_3_digits)) {
+		vty_out(vty, "%% Error decoding MNC: %s%s", mnc_str, VTY_NEWLINE);
+		return -1;
+	}
+	return 0;
+}
+
+DEFUN(cfg_sgsn_eplmn, cfg_sgsn_eplmn_cmd,
+      "equivalent-plmn <0-999> <0-999>",
+      "Add an equivalent PLMN advertised in Attach/RAU Accept (TS 24.008 10.5.1.13)\n"
+      "Mobile Country Code\n"
+      "Mobile Network Code\n")
+{
+	struct osmo_plmn_id plmn;
+	unsigned int i;
+
+	if (parse_eplmn_args(vty, argv[0], argv[1], &plmn))
+		return CMD_WARNING;
+
+	for (i = 0; i < g_cfg->eplmn_count; i++) {
+		if (osmo_plmn_cmp(&g_cfg->eplmn[i], &plmn) == 0)
+			return CMD_SUCCESS;
+	}
+	if (g_cfg->eplmn_count >= GSM_EPLMN_MAX) {
+		vty_out(vty, "%% At most %u equivalent PLMNs can be configured%s",
+			GSM_EPLMN_MAX, VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+	g_cfg->eplmn[g_cfg->eplmn_count++] = plmn;
+	return CMD_SUCCESS;
+}
+
+DEFUN(cfg_sgsn_no_eplmn, cfg_sgsn_no_eplmn_cmd,
+      "no equivalent-plmn <0-999> <0-999>",
+      NO_STR
+      "Remove an equivalent PLMN\n"
+      "Mobile Country Code\n"
+      "Mobile Network Code\n")
+{
+	struct osmo_plmn_id plmn;
+	unsigned int i, j;
+
+	if (parse_eplmn_args(vty, argv[0], argv[1], &plmn))
+		return CMD_WARNING;
+
+	for (i = 0; i < g_cfg->eplmn_count; i++) {
+		if (osmo_plmn_cmp(&g_cfg->eplmn[i], &plmn) != 0)
+			continue;
+		for (j = i; j + 1 < g_cfg->eplmn_count; j++)
+			g_cfg->eplmn[j] = g_cfg->eplmn[j + 1];
+		g_cfg->eplmn_count--;
+		return CMD_SUCCESS;
+	}
+	vty_out(vty, "%% Equivalent PLMN %s-%s is not configured%s",
+		osmo_mcc_name(plmn.mcc), osmo_mnc_name(plmn.mnc, plmn.mnc_3_digits),
+		VTY_NEWLINE);
+	return CMD_WARNING;
+}
+
 int sgsn_vty_init(struct sgsn_config *cfg)
 {
 	g_cfg = cfg;
@@ -2111,6 +2184,8 @@ int sgsn_vty_init(struct sgsn_config *cfg)
 	install_element(SGSN_NODE, &cfg_ggsn_echo_interval_cmd);
 	install_element(SGSN_NODE, &cfg_ggsn_no_echo_interval_cmd);
 	install_element(SGSN_NODE, &cfg_imsi_acl_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_eplmn_cmd);
+	install_element(SGSN_NODE, &cfg_sgsn_no_eplmn_cmd);
 	install_element(SGSN_NODE, &cfg_auth_policy_cmd);
 	install_element(SGSN_NODE, &cfg_authentication_cmd);
 
