@@ -95,6 +95,8 @@ struct sgsn_pdp_ctx {
 	LOGP(DGPRS, level, "PDP(%s/%u) " \
 	     fmt, (pdp)->mm ? (pdp)->mm->imsi : "---", (pdp)->ti, ## args)
 
+struct sgsn_pdp_ctx *sgsn_pdp_ctx_by_gtp_teid(uint32_t teid);
+
 struct sgsn_pdp_ctx *sgsn_pdp_ctx_alloc(struct sgsn_mm_ctx *mm,
 					struct sgsn_ggsn_ctx *ggsn,
 					struct pdp_t *pdp,

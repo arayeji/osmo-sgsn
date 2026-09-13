@@ -35,6 +35,7 @@
 #include <osmocom/sgsn/mmctx.h>
 
 #include <osmocom/sgsn/debug.h>
+#include <osmocom/sgsn/sgsn_api.h>
 
 static int bssgp_nm_bvc_reset_ind(struct osmo_bssgp_prim *bp)
 {
@@ -69,6 +70,9 @@ int sgsn_bssgp_rx_prim(struct osmo_prim_hdr *oph)
 	case SAP_BSSGP_LL:
 		switch (oph->primitive) {
 		case PRIM_BSSGP_UL_UD:
+			if (oph->msg && oph->msg->data && oph->msg->len)
+				sgsn_api_trace_packet_tlli(bp->tlli, "bssgp", false,
+							   oph->msg->data, oph->msg->len);
 			return gprs_llc_rcvmsg(oph->msg, bp->tp);
 		}
 		break;

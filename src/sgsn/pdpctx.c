@@ -50,6 +50,23 @@ static const struct rate_ctr_desc pdpctx_ctr_description[] = {
 	{ "udata:bytes:out",	"User Data Bytes    (Out)" },
 };
 
+struct sgsn_pdp_ctx *sgsn_pdp_ctx_by_gtp_teid(uint32_t teid)
+{
+	struct sgsn_pdp_ctx *pctx;
+
+	if (!teid)
+		return NULL;
+
+	llist_for_each_entry(pctx, &sgsn->pdp_list, g_list) {
+		if (!pctx->lib)
+			continue;
+		if (pctx->lib->teic_own == teid || pctx->lib->teic_gn == teid)
+			return pctx;
+	}
+
+	return NULL;
+}
+
 static const struct rate_ctr_group_desc pdpctx_ctrg_desc = {
 	.group_name_prefix = "sgsn:pdpctx",
 	.group_description = "SGSN PDP Context Statistics",

@@ -266,6 +266,7 @@ static inline bool sgsn_mm_ctx_is_authenticated(struct sgsn_mm_ctx *ctx)
 /* look-up a SGSN MM context based on TLLI + RAI */
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli(uint32_t tlli,
 					const struct osmo_routing_area_id *raid);
+struct sgsn_mm_ctx *sgsn_mm_ctx_by_any_tlli(uint32_t tlli);
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_ptmsi(uint32_t tmsi);
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_imsi(const char *imsi);
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_ue_ctx(const void *uectx);

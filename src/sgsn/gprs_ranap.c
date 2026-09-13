@@ -48,6 +48,7 @@
 #include <osmocom/sgsn/gprs_ranap.h>
 #include <osmocom/sgsn/gprs_gmm_attach.h>
 #include <osmocom/sgsn/gprs_mm_state_iu_fsm.h>
+#include <osmocom/sgsn/sgsn_api.h>
 #include <osmocom/sgsn/gprs_routing_area.h>
 #include <osmocom/sgsn/gtp_ggsn.h>
 #include <osmocom/sgsn/gtp.h>
@@ -55,7 +56,6 @@
 #include <osmocom/sgsn/iu_rnc_fsm.h>
 #include <osmocom/sgsn/pdpctx.h>
 #include <osmocom/sgsn/mmctx.h>
-#include <osmocom/sgsn/sgsn_api.h>
 
 /* Parsed global RNC id. See also struct RANAP_GlobalRNC_ID, and note that the
  * PLMN identity is a BCD representation of the MCC and MNC.
@@ -324,6 +324,10 @@ static int iu_ue_tx(struct ranap_ue_conn_ctx *uectx, struct msgb *msg)
 		msgb_free(msg);
 		return -ENOTCONN;
 	}
+
+	if (msg->data && msgb_length(msg))
+		sgsn_api_trace_packet_ue(live, "ranap", true, msg->data, msgb_length(msg));
+
 	return sgsn_scu_iups_tx_data_req(live->rnc->scu_iups, live->conn_id, msg);
 }
 
@@ -389,13 +393,6 @@ int sgsn_ranap_iu_tx(struct msgb *msg_nas, uint8_t sapi)
 	msgb_free(msg_nas);
 	if (!msg)
 		return -ENOMEM;
-
-	{
-		struct sgsn_mm_ctx *mm = sgsn_mm_ctx_by_ue_ctx(uectx);
-
-		if (mm && mm->imsi[0])
-			sgsn_api_trace_packet_mm(mm, "ranap", true, msg->data, msgb_length(msg));
-	}
 
 	return iu_ue_tx(uectx, msg);
 }
@@ -781,12 +778,9 @@ int sgsn_ranap_iu_rx_co_msg(struct ranap_ue_conn_ctx *ue_ctx, const uint8_t *dat
 		.ue_ctx = ue_ctx,
 	};
 	RANAP_Cause_t cause;
-	struct sgsn_mm_ctx *mm;
 	int rc;
 
-	mm = sgsn_mm_ctx_by_ue_ctx(ue_ctx);
-	if (mm && mm->imsi[0])
-		sgsn_api_trace_packet_mm(mm, "ranap", false, data, len);
+	sgsn_api_trace_packet_ue(ue_ctx, "ranap", false, data, len);
 
 	if (!ue_ctx || !ue_ctx->rnc || !ue_ctx->rnc->fi) {
 		LOGP(DRANAP, LOGL_ERROR, "RANAP CO message for UE without RNC\n");

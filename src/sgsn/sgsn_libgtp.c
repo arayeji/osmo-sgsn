@@ -121,53 +121,63 @@ const struct value_string gtp_cause_strs[] = {
 
 static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size_t len)
 {
-	union gtpie_member **ie;
+	union gtpie_member **ie = NULL;
 	uint64_t imsi64 = 0;
-	const char *imsi_str;
+	const char *imsi_str = NULL;
 	unsigned int payload_off;
 	const char *proto;
 	struct gtp1_header_short *gh1;
+	struct sgsn_pdp_ctx *pctx;
+	uint32_t teid = 0;
 
-	if (!data || !len)
-		return;
-
-	ie = talloc_zero_array(tall_sgsn_ctx, union gtpie_member *, GTPIE_SIZE);
-	if (!ie)
+	if (!data || !len || !sgsn_api_trace_any_active())
 		return;
 
 	if (version == 1) {
 		if (len < GTP1_HEADER_SIZE_SHORT)
-			goto out;
+			return;
 		gh1 = (struct gtp1_header_short *)data;
 		payload_off = (gh1->flags & GTP1HDR_F_SEQ) ?
 			GTP1_HEADER_SIZE_LONG : GTP1_HEADER_SIZE_SHORT;
 		proto = "gtp1c";
+		teid = ntohl(gh1->tei);
 	} else if (version == 0) {
+		struct gtp0_header *gh0 = (struct gtp0_header *)data;
 		if (len < GTP0_HEADER_SIZE)
-			goto out;
+			return;
 		payload_off = GTP0_HEADER_SIZE;
 		proto = "gtp0";
+		teid = ntohs(gh0->flow);
 	} else {
-		goto out;
+		return;
 	}
 
 	if (len <= payload_off)
-		goto out;
+		return;
+
+	ie = talloc_zero_array(tall_sgsn_ctx, union gtpie_member *, GTPIE_SIZE);
+	if (!ie)
+		goto teid_lookup;
 
 	if (gtpie_decaps(ie, version, data + payload_off, len - payload_off) < 0)
-		goto out;
+		goto teid_lookup;
 
-	if (gtpie_gettv8(ie, GTPIE_IMSI, 0, &imsi64) != 0)
-		goto out;
+	if (gtpie_gettv8(ie, GTPIE_IMSI, 0, &imsi64) == 0) {
+		imsi_str = imsi_gtp2str(&imsi64);
+		if (imsi_str && imsi_str[0]) {
+			sgsn_api_trace_packet(imsi_str, proto, tx, data, len);
+			goto out;
+		}
+	}
 
-	imsi_str = imsi_gtp2str(&imsi64);
-	if (!imsi_str || !imsi_str[0])
-		goto out;
-
-	sgsn_api_trace_packet(imsi_str, proto, tx, data, len);
+teid_lookup:
+	pctx = sgsn_pdp_ctx_by_gtp_teid(teid);
+	if (pctx)
+		sgsn_api_trace_packet_pdp(pctx, proto, tx, data, len);
 
 out:
-	talloc_free(ie);
+	if (ie)
+		talloc_free(ie);
 }
 
 static void cb_gtp_packet_trace(struct gsn_t *gsn, void *cbp, bool tx,

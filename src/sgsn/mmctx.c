@@ -227,6 +227,28 @@ struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli(uint32_t tlli,
 	return sgsn_mm_ctx_by_tlli_hash(tlli, raid);
 }
 
+struct sgsn_mm_ctx *sgsn_mm_ctx_by_any_tlli(uint32_t tlli)
+{
+	struct sgsn_mm_ctx *ctx;
+
+	if (!tlli)
+		return NULL;
+
+	llist_for_each_entry(ctx, &sgsn->mm_list, list) {
+		if (!sgsn_mm_ctx_list_active(ctx))
+			continue;
+		if (ctx->ran_type != MM_CTX_T_GERAN_Gb)
+			continue;
+		if (ctx->gb.tlli == tlli || ctx->gb.tlli_new == tlli)
+			return ctx;
+		if (ctx->gb.llme &&
+		    (ctx->gb.llme->tlli == tlli || ctx->gb.llme->old_tlli == tlli))
+			return ctx;
+	}
+
+	return NULL;
+}
+
 struct sgsn_mm_ctx *sgsn_mm_ctx_by_tlli_and_ptmsi(uint32_t tlli,
 					const struct osmo_routing_area_id *raid)
 {

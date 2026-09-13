@@ -38,6 +38,7 @@
 #include <osmocom/sgsn/sgsn_api.h>
 #include <osmocom/gsupclient/gsup_client.h>
 #if BUILD_IU
+#include <osmocom/sgsn/iu_client.h>
 #include <osmocom/sgsn/iu_rnc.h>
 #include <osmocom/sgsn/iu_rnc_fsm.h>
 #include <osmocom/sigtran/sccp_helpers.h>
@@ -1274,6 +1275,11 @@ static int api_trace_disable(const char *imsi)
 	return 0;
 }
 
+bool sgsn_api_trace_any_active(void)
+{
+	return !llist_empty(&g_api_traces);
+}
+
 bool sgsn_api_trace_active(const char *imsi)
 {
 	if (!imsi || !imsi[0])
@@ -1329,6 +1335,44 @@ void sgsn_api_trace_packet_mm(const struct sgsn_mm_ctx *mm, const char *proto,
 		return;
 	sgsn_api_trace_packet(mm->imsi, proto, tx, data, len);
 }
+
+void sgsn_api_trace_packet_pdp(const struct sgsn_pdp_ctx *pdp, const char *proto,
+			       bool tx, const uint8_t *data, size_t len)
+{
+	if (!pdp || !pdp->mm || !pdp->mm->imsi[0])
+		return;
+	sgsn_api_trace_packet(pdp->mm->imsi, proto, tx, data, len);
+}
+
+void sgsn_api_trace_packet_tlli(uint32_t tlli, const char *proto, bool tx,
+				const uint8_t *data, size_t len)
+{
+	struct sgsn_mm_ctx *mm;
+
+	if (!data || !len || !tlli)
+		return;
+	if (!sgsn_api_trace_any_active())
+		return;
+
+	mm = sgsn_mm_ctx_by_any_tlli(tlli);
+	sgsn_api_trace_packet_mm(mm, proto, tx, data, len);
+}
+
+#if BUILD_IU
+void sgsn_api_trace_packet_ue(const struct ranap_ue_conn_ctx *ue, const char *proto,
+			      bool tx, const uint8_t *data, size_t len)
+{
+	struct sgsn_mm_ctx *mm;
+
+	if (!ue || !data || !len)
+		return;
+	if (!sgsn_api_trace_any_active())
+		return;
+
+	mm = sgsn_mm_ctx_by_ue_ctx(ue);
+	sgsn_api_trace_packet_mm(mm, proto, tx, data, len);
+}
+#endif
 
 static char *build_trace_json(const struct sgsn_api_trace *t, const char *status)
 {
