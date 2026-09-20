@@ -75,6 +75,7 @@ static struct api_conn *g_api_conns[SGSN_API_MAX_CLIENTS];
 static pthread_t g_api_thread;
 static volatile bool g_api_thread_run;
 static pthread_mutex_t g_api_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_api_trace_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static bool api_enabled(void)
 {
@@ -903,7 +904,7 @@ static void api_client_close(struct api_conn *ac)
 	if (slot < 0)
 		return;
 	close(ac->fd);
-	talloc_free(ac);
+	free(ac);
 	g_api_conns[slot] = NULL;
 	if (g_api_client_count)
 		g_api_client_count--;
@@ -917,7 +918,9 @@ static int api_conn_add(int cfd)
 	for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
 		if (g_api_conns[i])
 			continue;
-		ac = talloc_zero(g_api_ctx, struct api_conn);
+		/* calloc: 64 KiB conn buffers must not use talloc (main thread also
+		 * uses tall_sgsn_ctx); concurrent talloc corrupts the heap. */
+		ac = calloc(1, sizeof(*ac));
 		if (!ac) {
 			close(cfd);
 			return -ENOMEM;
@@ -987,6 +990,12 @@ static void api_client_read(struct api_conn *ac)
 {
 	char *hdr_end;
 	ssize_t rc;
+
+	if (ac->len >= sizeof(ac->buf) - 1) {
+		api_send(ac, 413, "Payload Too Large", NULL, NULL);
+		api_client_close(ac);
+		return;
+	}
 
 	rc = read(ac->fd, ac->buf + ac->len, sizeof(ac->buf) - ac->len - 1);
 	if (rc <= 0) {
@@ -1190,7 +1199,7 @@ struct sgsn_api_trace {
 
 static LLIST_HEAD(g_api_traces);
 
-static struct sgsn_api_trace *api_trace_find(const char *imsi)
+static struct sgsn_api_trace *api_trace_find_nolock(const char *imsi)
 {
 	struct sgsn_api_trace *t;
 
@@ -1201,12 +1210,23 @@ static struct sgsn_api_trace *api_trace_find(const char *imsi)
 	return NULL;
 }
 
+static struct sgsn_api_trace *api_trace_find(const char *imsi)
+{
+	struct sgsn_api_trace *t;
+
+	pthread_mutex_lock(&g_api_trace_lock);
+	t = api_trace_find_nolock(imsi);
+	pthread_mutex_unlock(&g_api_trace_lock);
+	return t;
+}
+
 /* libosmocore log target output callback: keep only lines mentioning the traced
  * IMSI and write them to stderr, so the daemon's journald unit captures them. */
 static void api_trace_log_output(struct log_target *tgt, unsigned int level, const char *line)
 {
 	struct sgsn_api_trace *t;
 
+	pthread_mutex_lock(&g_api_trace_lock);
 	llist_for_each_entry(t, &g_api_traces, entry) {
 		if (t->target != tgt)
 			continue;
@@ -1214,8 +1234,9 @@ static void api_trace_log_output(struct log_target *tgt, unsigned int level, con
 			fputs(line, stderr);
 			fflush(stderr);
 		}
-		return;
+		break;
 	}
+	pthread_mutex_unlock(&g_api_trace_lock);
 }
 
 /* Returns 0 on success (*out set), negative errno otherwise. */
@@ -1224,20 +1245,25 @@ static int api_trace_enable(const char *imsi, struct sgsn_api_trace **out)
 	struct sgsn_api_trace *t;
 	struct log_target *tgt;
 
-	t = api_trace_find(imsi);
+	pthread_mutex_lock(&g_api_trace_lock);
+	t = api_trace_find_nolock(imsi);
 	if (t) {
 		*out = t;	/* idempotent */
+		pthread_mutex_unlock(&g_api_trace_lock);
 		return 0;
 	}
 
 	t = talloc_zero(g_api_ctx, struct sgsn_api_trace);
-	if (!t)
+	if (!t) {
+		pthread_mutex_unlock(&g_api_trace_lock);
 		return -ENOMEM;
+	}
 	osmo_strlcpy(t->imsi, imsi, sizeof(t->imsi));
 
 	tgt = log_target_create();
 	if (!tgt) {
 		talloc_free(t);
+		pthread_mutex_unlock(&g_api_trace_lock);
 		return -ENOMEM;
 	}
 	tgt->output = api_trace_log_output;
@@ -1253,6 +1279,7 @@ static int api_trace_enable(const char *imsi, struct sgsn_api_trace **out)
 
 	t->target = tgt;
 	llist_add_tail(&t->entry, &g_api_traces);
+	pthread_mutex_unlock(&g_api_trace_lock);
 	log_add_target(tgt);
 
 	LOGP(DGPRS, LOGL_NOTICE, "API enabled IMSI debug trace for %s (-> journal)\n", imsi);
@@ -1262,12 +1289,17 @@ static int api_trace_enable(const char *imsi, struct sgsn_api_trace **out)
 
 static int api_trace_disable(const char *imsi)
 {
-	struct sgsn_api_trace *t = api_trace_find(imsi);
+	struct sgsn_api_trace *t;
 
-	if (!t)
+	pthread_mutex_lock(&g_api_trace_lock);
+	t = api_trace_find_nolock(imsi);
+	if (!t) {
+		pthread_mutex_unlock(&g_api_trace_lock);
 		return -ENOENT;
+	}
 
 	llist_del(&t->entry);
+	pthread_mutex_unlock(&g_api_trace_lock);
 	if (t->target)
 		log_target_destroy(t->target);
 	LOGP(DGPRS, LOGL_NOTICE, "API disabled IMSI debug trace for %s\n", imsi);
@@ -1277,7 +1309,12 @@ static int api_trace_disable(const char *imsi)
 
 bool sgsn_api_trace_any_active(void)
 {
-	return !llist_empty(&g_api_traces);
+	bool active;
+
+	pthread_mutex_lock(&g_api_trace_lock);
+	active = !llist_empty(&g_api_traces);
+	pthread_mutex_unlock(&g_api_trace_lock);
+	return active;
 }
 
 bool sgsn_api_trace_active(const char *imsi)
@@ -1294,6 +1331,7 @@ void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
 	bool truncated = false;
 	unsigned char *b64;
 	char *line;
+	int rc;
 
 	if (!imsi || !imsi[0] || !proto || !data || !len)
 		return;
@@ -1307,25 +1345,25 @@ void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
 	}
 
 	b64_len = ((cap_len + 2) / 3) * 4 + 1;
-	b64 = talloc_size(g_api_ctx, b64_len);
+	b64 = malloc(b64_len);
 	if (!b64)
 		return;
 
 	if (osmo_base64_encode(b64, b64_len, &olen, data, cap_len) < 0) {
-		talloc_free(b64);
+		free(b64);
 		return;
 	}
 
-	line = talloc_asprintf(g_api_ctx,
-			       "[IMSI:%s] PACKET: proto=%s dir=%s len=%zu%s b64=%s\n",
-			       imsi, proto, tx ? "tx" : "rx", cap_len,
-			       truncated ? " trunc=1" : "", b64);
-	talloc_free(b64);
-	if (!line)
+	rc = asprintf(&line,
+		      "[IMSI:%s] PACKET: proto=%s dir=%s len=%zu%s b64=%s\n",
+		      imsi, proto, tx ? "tx" : "rx", cap_len,
+		      truncated ? " trunc=1" : "", b64);
+	free(b64);
+	if (rc < 0 || !line)
 		return;
 	fputs(line, stderr);
 	fflush(stderr);
-	talloc_free(line);
+	free(line);
 }
 
 void sgsn_api_trace_packet_mm(const struct sgsn_mm_ctx *mm, const char *proto,
@@ -1657,12 +1695,14 @@ void sgsn_api_shutdown(void)
 	struct sgsn_api_trace *t, *t2;
 	unsigned i;
 
+	pthread_mutex_lock(&g_api_trace_lock);
 	llist_for_each_entry_safe(t, t2, &g_api_traces, entry) {
 		llist_del(&t->entry);
 		if (t->target)
 			log_target_destroy(t->target);
 		talloc_free(t);
 	}
+	pthread_mutex_unlock(&g_api_trace_lock);
 
 	g_api_thread_run = false;
 	if (g_api_listen_fd >= 0) {
