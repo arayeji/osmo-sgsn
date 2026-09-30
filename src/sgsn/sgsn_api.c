@@ -861,6 +861,8 @@ static char *build_links_json(void)
 static void api_client_close(struct api_conn *ac);
 static int api_write_all(int fd, const char *data, size_t len);
 static void handle_request(struct api_conn *ac, const char *req);
+static bool parse_path(const char *req, char *method, size_t method_len,
+		       char *path, size_t path_len, char *query, size_t query_len);
 
 /* Runs in either thread: only stores the response, api_flush() writes it. */
 static void api_send(struct api_conn *ac, int code, const char *status,
@@ -1092,6 +1094,16 @@ static int api_wake_cb(struct osmo_fd *ofd, unsigned int what)
 	return 0;
 }
 
+/* /health touches no SGSN state, so it is answered by the API thread and stays
+ * responsive while the main loop is busy with signalling. */
+static bool api_is_health(const char *req)
+{
+	char method[16], path[256];
+
+	return parse_path(req, method, sizeof(method), path, sizeof(path), NULL, 0) &&
+	       !strcmp(path, "/health");
+}
+
 static void api_client_read(struct api_conn *ac)
 {
 	char *hdr_end;
@@ -1126,7 +1138,10 @@ static void api_client_read(struct api_conn *ac)
 		return;
 
 	*hdr_end = '\0';
-	api_run_in_main(ac);
+	if (api_is_health(ac->buf))
+		api_send(ac, 200, "OK", "application/json", "{\"status\":\"ok\"}");
+	else
+		api_run_in_main(ac);
 	api_flush(ac);
 	api_client_close(ac);
 }
