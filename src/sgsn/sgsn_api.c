@@ -12,10 +12,12 @@
 #include <string.h>
 #include <inttypes.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <poll.h>
 #include <pthread.h>
 
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/select.h>
 #include <osmocom/core/socket.h>
 #include <osmocom/core/logging.h>
 #include <osmocom/core/linuxlist.h>
@@ -51,6 +53,8 @@
 #define SGSN_API_MAX_CLIENTS 16
 #define SGSN_API_IDLE_SEC 5
 #define SGSN_API_POLL_MS 500
+#define SGSN_API_MAIN_WAIT_SEC 10
+#define SGSN_API_SND_TIMEOUT_SEC 5
 #define SGSN_API_PDP_DEFAULT_LIMIT 100
 #define SGSN_API_PDP_MAX_LIMIT 1000
 #define SGSN_API_PDP_MAX_SCAN 65535
@@ -67,6 +71,19 @@ struct api_conn {
 	char buf[API_CONN_BUF_SIZE];
 	size_t len;
 	time_t last_activity;
+	char *resp;		/* malloc'd HTTP response, written by the API thread */
+	size_t resp_len;
+};
+
+/* The API thread only does socket I/O. Parsed requests are handed to the
+ * main loop through g_api_wake_pipe, because talloc, the logging core and
+ * all SGSN state are single-threaded. Only malloc/free, stdio and the
+ * g_api_lock-protected job fields may be used from the API thread. */
+enum api_job_state {
+	API_JOB_NONE,
+	API_JOB_PENDING,
+	API_JOB_RUNNING,
+	API_JOB_DONE,
 };
 
 static int g_api_listen_fd = -1;
@@ -76,6 +93,11 @@ static struct api_conn *g_api_conns[SGSN_API_MAX_CLIENTS];
 static pthread_t g_api_thread;
 static volatile bool g_api_thread_run;
 static pthread_mutex_t g_api_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_api_job_cond = PTHREAD_COND_INITIALIZER;
+static struct api_conn *g_api_job_conn;
+static enum api_job_state g_api_job_state;
+static int g_api_wake_pipe[2] = { -1, -1 };
+static struct osmo_fd g_api_wake_ofd;
 static pthread_mutex_t g_api_trace_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static bool api_enabled(void)
@@ -840,30 +862,45 @@ static void api_client_close(struct api_conn *ac);
 static int api_write_all(int fd, const char *data, size_t len);
 static void handle_request(struct api_conn *ac, const char *req);
 
+/* Runs in either thread: only stores the response, api_flush() writes it. */
 static void api_send(struct api_conn *ac, int code, const char *status,
 		     const char *content_type, const char *body)
 {
-	char *resp;
+	char *resp = NULL;
 	size_t body_len = body ? strlen(body) : 0;
+	int rc;
 
 	if (content_type && body)
-		resp = talloc_asprintf(g_api_ctx,
-				       "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
-				       code, status, content_type, body_len, body);
+		rc = asprintf(&resp,
+			      "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+			      code, status, content_type, body_len, body);
 	else
-		resp = talloc_asprintf(g_api_ctx,
-				       "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-				       code, status);
-	if (!resp)
+		rc = asprintf(&resp,
+			      "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+			      code, status);
+	if (rc < 0)
 		return;
 
-	if (api_write_all(ac->fd, resp, strlen(resp)) < 0) {
+	free(ac->resp);
+	ac->resp = resp;
+	ac->resp_len = rc;
+}
+
+static void api_flush(struct api_conn *ac)
+{
+	int rc;
+
+	if (!ac->resp)
+		return;
+	rc = api_write_all(ac->fd, ac->resp, ac->resp_len);
+	if (rc == -EAGAIN) {
 		osmo_sock_set_nonblock(ac->fd, 0);
-		if (api_write_all(ac->fd, resp, strlen(resp)) < 0)
-			LOGP(DGPRS, LOGL_ERROR, "HTTP API write failed: %s\n", strerror(errno));
-		osmo_sock_set_nonblock(ac->fd, 1);
+		rc = api_write_all(ac->fd, ac->resp, ac->resp_len);
 	}
-	talloc_free(resp);
+	if (rc < 0)
+		fprintf(stderr, "HTTP API write failed: %s\n", strerror(-rc));
+	free(ac->resp);
+	ac->resp = NULL;
 }
 
 static int api_write_all(int fd, const char *data, size_t len)
@@ -905,6 +942,7 @@ static void api_client_close(struct api_conn *ac)
 	if (slot < 0)
 		return;
 	close(ac->fd);
+	free(ac->resp);
 	free(ac);
 	g_api_conns[slot] = NULL;
 	if (g_api_client_count)
@@ -919,13 +957,14 @@ static int api_conn_add(int cfd)
 	for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
 		if (g_api_conns[i])
 			continue;
-		/* calloc: 64 KiB conn buffers must not use talloc (main thread also
-		 * uses tall_sgsn_ctx); concurrent talloc corrupts the heap. */
+		struct timeval snd_to = { .tv_sec = SGSN_API_SND_TIMEOUT_SEC };
+
 		ac = calloc(1, sizeof(*ac));
 		if (!ac) {
 			close(cfd);
 			return -ENOMEM;
 		}
+		setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &snd_to, sizeof(snd_to));
 		ac->fd = cfd;
 		ac->last_activity = time(NULL);
 		g_api_conns[i] = ac;
@@ -943,7 +982,7 @@ static void api_accept_all(void)
 		if (cfd < 0) {
 			if (errno == EAGAIN || errno == EINTR)
 				break;
-			LOGP(DGPRS, LOGL_ERROR, "HTTP API accept failed: %s\n", strerror(errno));
+			fprintf(stderr, "HTTP API accept failed: %s\n", strerror(errno));
 			break;
 		}
 
@@ -980,11 +1019,77 @@ static void api_idle_sweep(void)
 
 		if (!ac)
 			continue;
-		if (now - ac->last_activity >= SGSN_API_IDLE_SEC) {
-			LOGP(DGPRS, LOGL_NOTICE, "HTTP API client idle timeout\n");
+		if (now - ac->last_activity >= SGSN_API_IDLE_SEC)
 			api_client_close(ac);
-		}
 	}
+}
+
+/* API thread: queue ac for handle_request() in the main loop and wait for
+ * the response. A job the main loop has not picked up within
+ * SGSN_API_MAIN_WAIT_SEC is withdrawn; a running one is always waited for,
+ * since the main loop is using ac. */
+static void api_run_in_main(struct api_conn *ac)
+{
+	struct timespec deadline;
+	const char one = 1;
+	bool done;
+
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_sec += SGSN_API_MAIN_WAIT_SEC;
+
+	pthread_mutex_lock(&g_api_lock);
+	g_api_job_conn = ac;
+	g_api_job_state = API_JOB_PENDING;
+	pthread_mutex_unlock(&g_api_lock);
+
+	if (write(g_api_wake_pipe[1], &one, 1) < 0 && errno != EAGAIN)
+		fprintf(stderr, "HTTP API wake failed: %s\n", strerror(errno));
+
+	pthread_mutex_lock(&g_api_lock);
+	while (g_api_job_state != API_JOB_DONE && g_api_thread_run) {
+		int rc;
+
+		if (g_api_job_state == API_JOB_PENDING)
+			rc = pthread_cond_timedwait(&g_api_job_cond, &g_api_lock, &deadline);
+		else
+			rc = pthread_cond_wait(&g_api_job_cond, &g_api_lock);
+		if (rc == ETIMEDOUT && g_api_job_state == API_JOB_PENDING)
+			break;
+	}
+	done = g_api_job_state == API_JOB_DONE;
+	g_api_job_conn = NULL;
+	g_api_job_state = API_JOB_NONE;
+	pthread_mutex_unlock(&g_api_lock);
+
+	if (!done)
+		api_send(ac, 503, "Service Unavailable", NULL, NULL);
+}
+
+/* Main loop: run the queued request. */
+static int api_wake_cb(struct osmo_fd *ofd, unsigned int what)
+{
+	struct api_conn *ac = NULL;
+	char drain[16];
+
+	while (read(ofd->fd, drain, sizeof(drain)) > 0)
+		;
+
+	pthread_mutex_lock(&g_api_lock);
+	if (g_api_job_state == API_JOB_PENDING) {
+		ac = g_api_job_conn;
+		g_api_job_state = API_JOB_RUNNING;
+	}
+	pthread_mutex_unlock(&g_api_lock);
+	if (!ac)
+		return 0;
+
+	handle_request(ac, ac->buf);
+
+	pthread_mutex_lock(&g_api_lock);
+	g_api_job_state = API_JOB_DONE;
+	pthread_cond_broadcast(&g_api_job_cond);
+	pthread_mutex_unlock(&g_api_lock);
+	return 0;
 }
 
 static void api_client_read(struct api_conn *ac)
@@ -994,6 +1099,7 @@ static void api_client_read(struct api_conn *ac)
 
 	if (ac->len >= sizeof(ac->buf) - 1) {
 		api_send(ac, 413, "Payload Too Large", NULL, NULL);
+		api_flush(ac);
 		api_client_close(ac);
 		return;
 	}
@@ -1010,6 +1116,7 @@ static void api_client_read(struct api_conn *ac)
 
 	if (ac->len + 1 >= sizeof(ac->buf)) {
 		api_send(ac, 413, "Payload Too Large", NULL, NULL);
+		api_flush(ac);
 		api_client_close(ac);
 		return;
 	}
@@ -1019,9 +1126,8 @@ static void api_client_read(struct api_conn *ac)
 		return;
 
 	*hdr_end = '\0';
-	pthread_mutex_lock(&g_api_lock);
-	handle_request(ac, ac->buf);
-	pthread_mutex_unlock(&g_api_lock);
+	api_run_in_main(ac);
+	api_flush(ac);
 	api_client_close(ac);
 }
 
@@ -1055,7 +1161,7 @@ static void *api_thread_main(void *arg)
 		if (rc < 0) {
 			if (errno == EINTR)
 				continue;
-			LOGP(DGPRS, LOGL_ERROR, "HTTP API poll failed: %s\n", strerror(errno));
+			fprintf(stderr, "HTTP API poll failed: %s\n", strerror(errno));
 			break;
 		}
 
@@ -1955,17 +2061,38 @@ int sgsn_api_init(struct sgsn_instance *inst)
 		LOGP(DGPRS, LOGL_ERROR, "HTTP API listen(%s:%u) failed: %s\n",
 		     bind_addr, port, strerror(errno));
 
+	if (pipe(g_api_wake_pipe) < 0) {
+		LOGP(DGPRS, LOGL_ERROR, "HTTP API pipe() failed: %s\n", strerror(errno));
+		close(fd);
+		return -EIO;
+	}
+	osmo_sock_set_nonblock(g_api_wake_pipe[0], 1);
+	osmo_sock_set_nonblock(g_api_wake_pipe[1], 1);
+	osmo_fd_setup(&g_api_wake_ofd, g_api_wake_pipe[0], OSMO_FD_READ, api_wake_cb, NULL, 0);
+	if (osmo_fd_register(&g_api_wake_ofd) < 0) {
+		LOGP(DGPRS, LOGL_ERROR, "HTTP API wake fd register failed\n");
+		goto err_pipe;
+	}
+
 	g_api_listen_fd = fd;
 	g_api_thread_run = true;
 	if (pthread_create(&g_api_thread, NULL, api_thread_main, NULL) != 0) {
 		LOGP(DGPRS, LOGL_ERROR, "Failed to start HTTP API thread\n");
-		close(fd);
+		g_api_thread_run = false;
 		g_api_listen_fd = -1;
-		return -EIO;
+		osmo_fd_unregister(&g_api_wake_ofd);
+		goto err_pipe;
 	}
 
 	LOGP(DGPRS, LOGL_NOTICE, "HTTP API listening on %s:%u (dedicated thread)\n", bind_addr, port);
 	return 0;
+
+err_pipe:
+	close(g_api_wake_pipe[0]);
+	close(g_api_wake_pipe[1]);
+	g_api_wake_pipe[0] = g_api_wake_pipe[1] = -1;
+	close(fd);
+	return -EIO;
 }
 
 void sgsn_api_shutdown(void)
@@ -1982,13 +2109,22 @@ void sgsn_api_shutdown(void)
 	}
 	pthread_mutex_unlock(&g_api_trace_lock);
 
+	if (g_api_listen_fd < 0)
+		return;
+
+	pthread_mutex_lock(&g_api_lock);
 	g_api_thread_run = false;
-	if (g_api_listen_fd >= 0) {
-		shutdown(g_api_listen_fd, SHUT_RDWR);
-		close(g_api_listen_fd);
-		g_api_listen_fd = -1;
-	}
+	pthread_cond_broadcast(&g_api_job_cond);
+	pthread_mutex_unlock(&g_api_lock);
+	shutdown(g_api_listen_fd, SHUT_RDWR);
+	close(g_api_listen_fd);
+	g_api_listen_fd = -1;
 	pthread_join(g_api_thread, NULL);
+
+	osmo_fd_unregister(&g_api_wake_ofd);
+	close(g_api_wake_pipe[0]);
+	close(g_api_wake_pipe[1]);
+	g_api_wake_pipe[0] = g_api_wake_pipe[1] = -1;
 
 	for (i = 0; i < SGSN_API_MAX_CLIENTS; i++) {
 		if (g_api_conns[i])
