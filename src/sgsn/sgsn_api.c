@@ -27,6 +27,7 @@
 #include <osmocom/gtp/pdp.h>
 #include <osmocom/gsm/apn.h>
 #include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
+#include <osmocom/gprs/gprs_ns2.h>
 
 #include <osmocom/sgsn/debug.h>
 #include <osmocom/sgsn/gprs_gmm.h>
@@ -1199,6 +1200,42 @@ struct sgsn_api_trace {
 
 static LLIST_HEAD(g_api_traces);
 
+/* The SGSN's own Iu SCTP association goes to the local STP, so the real RNC
+ * addresses are taken from the STP config: RNC point code -> AS -> ASP.
+ * Re-read on every trace enable; only accessed from the main thread. */
+#define SGSN_API_STP_CFG "/etc/osmocom/osmo-stp.cfg"
+#define STP_MAX_ASP 32
+#define STP_MAX_AS 32
+#define STP_MAX_ADDR 4
+#define STP_NAME_LEN 32
+
+#if BUILD_IU
+struct stp_asp {
+	char name[STP_NAME_LEN];
+	uint16_t remote_port;
+	uint16_t local_port;
+	char remote_ip[STP_MAX_ADDR][INET6_ADDRSTRLEN];
+	unsigned n_remote_ip;
+	char local_ip[STP_MAX_ADDR][INET6_ADDRSTRLEN];
+	unsigned n_local_ip;
+};
+
+struct stp_as {
+	char asp[STP_MAX_ADDR][STP_NAME_LEN];
+	unsigned n_asp;
+	char pc[STP_MAX_ADDR][32];
+	unsigned n_pc;
+};
+
+static struct {
+	struct stp_asp asp[STP_MAX_ASP];
+	unsigned n_asp;
+	struct stp_as as[STP_MAX_AS];
+	unsigned n_as;
+} g_stp_map;
+#endif
+static volatile bool g_stp_map_stale = true;
+
 static struct sgsn_api_trace *api_trace_find_nolock(const char *imsi)
 {
 	struct sgsn_api_trace *t;
@@ -1281,6 +1318,7 @@ static int api_trace_enable(const char *imsi, struct sgsn_api_trace **out)
 	llist_add_tail(&t->entry, &g_api_traces);
 	pthread_mutex_unlock(&g_api_trace_lock);
 	log_add_target(tgt);
+	g_stp_map_stale = true;
 
 	LOGP(DGPRS, LOGL_NOTICE, "API enabled IMSI debug trace for %s (-> journal)\n", imsi);
 	*out = t;
@@ -1325,7 +1363,7 @@ bool sgsn_api_trace_active(const char *imsi)
 }
 
 void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
-			   const uint8_t *data, size_t len)
+			   const char *link, const uint8_t *data, size_t len)
 {
 	size_t cap_len, b64_len, olen;
 	bool truncated = false;
@@ -1355,8 +1393,8 @@ void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
 	}
 
 	rc = asprintf(&line,
-		      "[IMSI:%s] PACKET: proto=%s dir=%s len=%zu%s b64=%s\n",
-		      imsi, proto, tx ? "tx" : "rx", cap_len,
+		      "[IMSI:%s] PACKET: proto=%s dir=%s%s len=%zu%s b64=%s\n",
+		      imsi, proto, tx ? "tx" : "rx", link ? link : "", cap_len,
 		      truncated ? " trunc=1" : "", b64);
 	free(b64);
 	if (rc < 0 || !line)
@@ -1366,49 +1404,289 @@ void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
 	free(line);
 }
 
+#if BUILD_IU
+/* Join addresses as "ip:port,ip:port"; port 0 (dynamic) prints the IP only. */
+static void api_fmt_endpoints(char *out, size_t out_len, const char (*ips)[INET6_ADDRSTRLEN],
+			      unsigned n, uint16_t port)
+{
+	size_t off = 0;
+	unsigned i;
+
+	out[0] = '\0';
+	if (!n) {
+		osmo_strlcpy(out, "?", out_len);
+		return;
+	}
+	for (i = 0; i < n && off < out_len; i++) {
+		const char *ip = ips[i];
+		bool v6 = strchr(ip, ':') != NULL;
+		int rc;
+
+		if (!strcmp(ip, "0.0.0.0") || !strcmp(ip, "::"))
+			ip = "*";
+		if (port)
+			rc = snprintf(out + off, out_len - off, "%s%s%s%s:%u", i ? "," : "",
+				      v6 ? "[" : "", ip, v6 ? "]" : "", port);
+		else
+			rc = snprintf(out + off, out_len - off, "%s%s", i ? "," : "", ip);
+		if (rc < 0)
+			break;
+		off += rc;
+	}
+}
+#endif
+
+struct api_gb_link {
+	char local[128];
+	char remote[128];
+	unsigned n;
+};
+
+static void api_gb_link_add(char *list, size_t list_len, const struct osmo_sockaddr *sa)
+{
+	char tmp[INET6_ADDRSTRLEN + 16];
+	size_t off = strlen(list);
+
+	if (!sa || !osmo_sockaddr_to_str_buf(tmp, sizeof(tmp), sa))
+		return;
+	if (strstr(list, tmp))
+		return;
+	snprintf(list + off, list_len - off, "%s%s", off ? "," : "", tmp);
+}
+
+static int api_gb_link_nsvc_cb(struct gprs_ns2_vc *nsvc, void *ctx)
+{
+	struct api_gb_link *g = ctx;
+	const struct osmo_sockaddr *remote = gprs_ns2_ip_vc_remote(nsvc);
+
+	if (!remote)
+		return 0;
+	api_gb_link_add(g->remote, sizeof(g->remote), remote);
+	api_gb_link_add(g->local, sizeof(g->local), gprs_ns2_ip_vc_local(nsvc));
+	g->n++;
+	return 0;
+}
+
+/* NS2 load-shares across the NS-VCs of an NSE internally, so with more than
+ * one IP NS-VC all candidate endpoints are listed. */
+const char *sgsn_api_trace_link_gb(char *buf, size_t buf_len, uint16_t nsei, bool tx)
+{
+	struct gprs_ns2_nse *nse = NULL;
+	struct api_gb_link g = {};
+
+	if (sgsn && sgsn->cfg.nsi)
+		nse = gprs_ns2_nse_by_nsei(sgsn->cfg.nsi, nsei);
+	if (nse)
+		gprs_ns2_nse_foreach_nsvc(nse, api_gb_link_nsvc_cb, &g);
+	if (!g.n) {
+		snprintf(buf, buf_len, " link=gb nsei=%u", nsei);
+		return buf;
+	}
+	if (!g.local[0])
+		osmo_strlcpy(g.local, "?", sizeof(g.local));
+	snprintf(buf, buf_len, " link=gb nsei=%u src=%s dst=%s", nsei,
+		 tx ? g.local : g.remote, tx ? g.remote : g.local);
+	return buf;
+}
+
+#if BUILD_IU
+static void stp_map_load(void)
+{
+	struct stp_asp *cur_asp = NULL;
+	struct stp_as *cur_as = NULL;
+	char line[256];
+	FILE *f;
+
+	memset(&g_stp_map, 0, sizeof(g_stp_map));
+	f = fopen(SGSN_API_STP_CFG, "r");
+	if (!f) {
+		LOGP(DGPRS, LOGL_NOTICE, "IMSI trace: cannot read %s, Iu RNC IPs unavailable\n",
+		     SGSN_API_STP_CFG);
+		return;
+	}
+
+	while (fgets(line, sizeof(line), f)) {
+		size_t indent = strspn(line, " ");
+		const char *p = line + indent;
+		char name[STP_NAME_LEN], addr[INET6_ADDRSTRLEN], pc[32];
+		unsigned rport, lport;
+
+		if (indent == 1) {
+			cur_asp = NULL;
+			cur_as = NULL;
+			if (!strncmp(p, "asp ", 4) &&
+			    sscanf(p, "asp %31s %u %u", name, &rport, &lport) == 3 &&
+			    g_stp_map.n_asp < STP_MAX_ASP) {
+				cur_asp = &g_stp_map.asp[g_stp_map.n_asp++];
+				osmo_strlcpy(cur_asp->name, name, sizeof(cur_asp->name));
+				cur_asp->remote_port = rport;
+				cur_asp->local_port = lport;
+			} else if (!strncmp(p, "as ", 3) && g_stp_map.n_as < STP_MAX_AS) {
+				cur_as = &g_stp_map.as[g_stp_map.n_as++];
+			}
+		} else if (indent == 2 && cur_asp) {
+			if (!strncmp(p, "remote-ip ", 10) && sscanf(p, "remote-ip %45s", addr) == 1 &&
+			    cur_asp->n_remote_ip < STP_MAX_ADDR)
+				osmo_strlcpy(cur_asp->remote_ip[cur_asp->n_remote_ip++], addr,
+					     INET6_ADDRSTRLEN);
+			else if (!strncmp(p, "local-ip ", 9) && sscanf(p, "local-ip %45s", addr) == 1 &&
+				 cur_asp->n_local_ip < STP_MAX_ADDR)
+				osmo_strlcpy(cur_asp->local_ip[cur_asp->n_local_ip++], addr,
+					     INET6_ADDRSTRLEN);
+		} else if (indent == 2 && cur_as) {
+			if (!strncmp(p, "asp ", 4) && sscanf(p, "asp %31s", name) == 1 &&
+			    cur_as->n_asp < STP_MAX_ADDR)
+				osmo_strlcpy(cur_as->asp[cur_as->n_asp++], name, STP_NAME_LEN);
+			else if (!strncmp(p, "routing-key ", 12) &&
+				 sscanf(p, "routing-key %*u %31s", pc) == 1 &&
+				 cur_as->n_pc < STP_MAX_ADDR)
+				osmo_strlcpy(cur_as->pc[cur_as->n_pc++], pc, sizeof(cur_as->pc[0]));
+		} else if (indent == 0) {
+			cur_asp = NULL;
+			cur_as = NULL;
+		}
+	}
+	fclose(f);
+}
+
+static const struct stp_asp *stp_asp_find(const char *name)
+{
+	unsigned i;
+
+	for (i = 0; i < g_stp_map.n_asp; i++) {
+		if (!strcmp(g_stp_map.asp[i].name, name))
+			return &g_stp_map.asp[i];
+	}
+	return NULL;
+}
+
+static const struct stp_asp *stp_asp_for_pc(const struct osmo_ss7_instance *inst, uint32_t pc)
+{
+	unsigned i, j, k;
+
+	if (g_stp_map_stale) {
+		g_stp_map_stale = false;
+		stp_map_load();
+	}
+
+	for (i = 0; i < g_stp_map.n_as; i++) {
+		const struct stp_as *as = &g_stp_map.as[i];
+
+		for (j = 0; j < as->n_pc; j++) {
+			if (osmo_ss7_pointcode_parse(inst, as->pc[j]) != (int)pc)
+				continue;
+			for (k = 0; k < as->n_asp; k++) {
+				const struct stp_asp *asp = stp_asp_find(as->asp[k]);
+				if (asp)
+					return asp;
+			}
+		}
+	}
+	return NULL;
+}
+
+const char *sgsn_api_trace_link_iu(char *buf, size_t buf_len,
+				   const struct ranap_ue_conn_ctx *ue, bool tx)
+{
+	const struct osmo_ss7_instance *inst;
+	const struct ranap_iu_rnc *rnc;
+	const struct stp_asp *asp;
+	char pc_str[32], rnc_id[64], stp_ep[160], rnc_ep[160];
+
+	buf[0] = '\0';
+	if (!ue)
+		return buf;
+	rnc = ue->rnc;
+	if (!rnc) {
+		snprintf(buf, buf_len, " link=iu conn_id=%u", ue->conn_id);
+		return buf;
+	}
+
+	inst = osmo_ss7_instance_find(sgsn->cfg.iu.cs7_instance);
+	api_fmt_rnc_id(&rnc->rnc_id, rnc_id, sizeof(rnc_id));
+	if (!(rnc->sccp_addr.presence & OSMO_SCCP_ADDR_T_PC)) {
+		snprintf(buf, buf_len, " link=iu conn_id=%u rnc_id=%s", ue->conn_id, rnc_id);
+		return buf;
+	}
+	osmo_ss7_pointcode_print_buf(pc_str, sizeof(pc_str), inst, rnc->sccp_addr.pc);
+
+	asp = stp_asp_for_pc(inst, rnc->sccp_addr.pc);
+	if (!asp) {
+		snprintf(buf, buf_len, " link=iu conn_id=%u rnc_id=%s rnc_pc=%s",
+			 ue->conn_id, rnc_id, pc_str);
+		return buf;
+	}
+
+	api_fmt_endpoints(stp_ep, sizeof(stp_ep), asp->local_ip, asp->n_local_ip, asp->local_port);
+	api_fmt_endpoints(rnc_ep, sizeof(rnc_ep), asp->remote_ip, asp->n_remote_ip, asp->remote_port);
+	snprintf(buf, buf_len, " link=iu conn_id=%u rnc_id=%s rnc_pc=%s asp=%s src=%s dst=%s",
+		 ue->conn_id, rnc_id, pc_str, asp->name,
+		 tx ? stp_ep : rnc_ep, tx ? rnc_ep : stp_ep);
+	return buf;
+}
+#endif
+
+static const char *api_trace_link_mm(char *buf, size_t buf_len,
+				     const struct sgsn_mm_ctx *mm, bool tx)
+{
+	buf[0] = '\0';
+	switch (mm->ran_type) {
+	case MM_CTX_T_GERAN_Gb:
+		return sgsn_api_trace_link_gb(buf, buf_len, mm->gb.nsei, tx);
+#if BUILD_IU
+	case MM_CTX_T_UTRAN_Iu:
+		if (mm->iu.ue_ctx)
+			return sgsn_api_trace_link_iu(buf, buf_len, mm->iu.ue_ctx, tx);
+		break;
+#endif
+	default:
+		break;
+	}
+	return buf;
+}
+
 void sgsn_api_trace_packet_mm(const struct sgsn_mm_ctx *mm, const char *proto,
 			      bool tx, const uint8_t *data, size_t len)
 {
-	if (!mm || !mm->imsi[0])
+	char link[SGSN_API_TRACE_LINK_MAX];
+
+	if (!mm || !mm->imsi[0] || !data || !len)
 		return;
-	sgsn_api_trace_packet(mm->imsi, proto, tx, data, len);
+	if (!sgsn_api_trace_active(mm->imsi))
+		return;
+	sgsn_api_trace_packet(mm->imsi, proto, tx,
+			      api_trace_link_mm(link, sizeof(link), mm, tx), data, len);
 }
 
-void sgsn_api_trace_packet_pdp(const struct sgsn_pdp_ctx *pdp, const char *proto,
-			       bool tx, const uint8_t *data, size_t len)
+void sgsn_api_trace_packet_gb(const struct sgsn_mm_ctx *mm, uint32_t tlli, uint16_t nsei,
+			      const char *proto, bool tx, const uint8_t *data, size_t len)
 {
-	if (!pdp || !pdp->mm || !pdp->mm->imsi[0])
-		return;
-	sgsn_api_trace_packet(pdp->mm->imsi, proto, tx, data, len);
-}
+	char link[SGSN_API_TRACE_LINK_MAX];
 
-void sgsn_api_trace_packet_tlli(uint32_t tlli, const char *proto, bool tx,
-				const uint8_t *data, size_t len)
-{
-	struct sgsn_mm_ctx *mm;
-
-	if (!data || !len || !tlli)
+	if (!data || !len || !sgsn_api_trace_any_active())
 		return;
-	if (!sgsn_api_trace_any_active())
+	if ((!mm || !mm->imsi[0]) && tlli)
+		mm = sgsn_mm_ctx_by_any_tlli(tlli);
+	if (!mm || !mm->imsi[0] || !sgsn_api_trace_active(mm->imsi))
 		return;
-
-	mm = sgsn_mm_ctx_by_any_tlli(tlli);
-	sgsn_api_trace_packet_mm(mm, proto, tx, data, len);
+	sgsn_api_trace_packet(mm->imsi, proto, tx,
+			      sgsn_api_trace_link_gb(link, sizeof(link), nsei, tx), data, len);
 }
 
 #if BUILD_IU
 void sgsn_api_trace_packet_ue(const struct ranap_ue_conn_ctx *ue, const char *proto,
 			      bool tx, const uint8_t *data, size_t len)
 {
+	char link[SGSN_API_TRACE_LINK_MAX];
 	struct sgsn_mm_ctx *mm;
 
-	if (!ue || !data || !len)
+	if (!ue || !data || !len || !sgsn_api_trace_any_active())
 		return;
-	if (!sgsn_api_trace_any_active())
-		return;
-
 	mm = sgsn_mm_ctx_by_ue_ctx(ue);
-	sgsn_api_trace_packet_mm(mm, proto, tx, data, len);
+	if (!mm || !mm->imsi[0] || !sgsn_api_trace_active(mm->imsi))
+		return;
+	sgsn_api_trace_packet(mm->imsi, proto, tx,
+			      sgsn_api_trace_link_iu(link, sizeof(link), ue, tx), data, len);
 }
 #endif
 

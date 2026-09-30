@@ -19,18 +19,24 @@ void sgsn_api_shutdown(void);
 struct sgsn_mm_ctx;
 struct sgsn_pdp_ctx;
 
+#define SGSN_API_TRACE_LINK_MAX 256
+
 bool sgsn_api_trace_any_active(void);
 bool sgsn_api_trace_active(const char *imsi);
+/* link: optional " link=..." description of the transport the packet used */
 void sgsn_api_trace_packet(const char *imsi, const char *proto, bool tx,
-			   const uint8_t *data, size_t len);
+			   const char *link, const uint8_t *data, size_t len);
+/* Derives the link from the MM context's current RAN connection. */
 void sgsn_api_trace_packet_mm(const struct sgsn_mm_ctx *mm, const char *proto,
 			      bool tx, const uint8_t *data, size_t len);
-void sgsn_api_trace_packet_pdp(const struct sgsn_pdp_ctx *pdp, const char *proto,
-			       bool tx, const uint8_t *data, size_t len);
-void sgsn_api_trace_packet_tlli(uint32_t tlli, const char *proto, bool tx,
-				const uint8_t *data, size_t len);
+/* mm may be NULL; it is then resolved from the TLLI. */
+void sgsn_api_trace_packet_gb(const struct sgsn_mm_ctx *mm, uint32_t tlli, uint16_t nsei,
+			      const char *proto, bool tx, const uint8_t *data, size_t len);
+const char *sgsn_api_trace_link_gb(char *buf, size_t buf_len, uint16_t nsei, bool tx);
 #if BUILD_IU
 struct ranap_ue_conn_ctx;
 void sgsn_api_trace_packet_ue(const struct ranap_ue_conn_ctx *ue, const char *proto,
 			      bool tx, const uint8_t *data, size_t len);
+const char *sgsn_api_trace_link_iu(char *buf, size_t buf_len,
+				   const struct ranap_ue_conn_ctx *ue, bool tx);
 #endif

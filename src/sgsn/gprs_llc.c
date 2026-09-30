@@ -413,10 +413,8 @@ static int _bssgp_tx_dl_ud(struct msgb *msg, struct sgsn_mm_ctx *mmctx)
 	memcpy(&dup.qos_profile, qos_profile_default,
 		sizeof(qos_profile_default));
 
-	if (mmctx && mmctx->imsi[0])
-		sgsn_api_trace_packet_mm(mmctx, "bssgp", true, msg->data, msg->len);
-	else
-		sgsn_api_trace_packet_tlli(msgb_tlli(msg), "bssgp", true, msg->data, msg->len);
+	sgsn_api_trace_packet_gb(mmctx, msgb_tlli(msg), msgb_nsei(msg), "llc", true,
+				 msg->data, msg->len);
 
 	return bssgp_tx_dl_ud(msg, 1000, &dup);
 }
@@ -837,11 +835,6 @@ int gprs_llc_tx_ui(struct msgb *msg, uint8_t sapi, int command,
 	rate_ctr_inc(rate_ctr_group_get_ctr(sgsn->rate_ctrs, CTR_LLC_DL_PACKETS));
 	rate_ctr_add(rate_ctr_group_get_ctr(sgsn->rate_ctrs, CTR_LLC_DL_BYTES), msg->len);
 
-	if (mmctx && mmctx->imsi[0])
-		sgsn_api_trace_packet_mm(mmctx, "llc", true, msg->data, msg->len);
-	else
-		sgsn_api_trace_packet_tlli(msgb_tlli(msg), "llc", true, msg->data, msg->len);
-
 	/* Identifiers passed down: (BVCI, NSEI) */
 
 	/* Send BSSGP-DL-UNITDATA.req */
@@ -1033,14 +1026,9 @@ int gprs_llc_rcvmsg(struct msgb *msg, struct tlv_parsed *tv)
 		uint16_t llc_len = TLVP_LEN(tv, BSSGP_IE_LLC_PDU);
 
 		mmctx = sgsn_mm_ctx_by_llme(lle->llme);
-		if (llc_len) {
-			if (mmctx && mmctx->imsi[0])
-				sgsn_api_trace_packet_mm(mmctx, "llc", false,
-							 (const uint8_t *)msgb_llch(msg), llc_len);
-			else
-				sgsn_api_trace_packet_tlli(msgb_tlli(msg), "llc", false,
-							   (const uint8_t *)msgb_llch(msg), llc_len);
-		}
+		if (llc_len)
+			sgsn_api_trace_packet_gb(mmctx, msgb_tlli(msg), msgb_nsei(msg), "llc", false,
+						 (const uint8_t *)msgb_llch(msg), llc_len);
 	}
 
 	/* llhp.data is only set when we need to send LL_[UNIT]DATA_IND up */

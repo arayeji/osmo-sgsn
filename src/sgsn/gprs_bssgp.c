@@ -70,9 +70,9 @@ int sgsn_bssgp_rx_prim(struct osmo_prim_hdr *oph)
 	case SAP_BSSGP_LL:
 		switch (oph->primitive) {
 		case PRIM_BSSGP_UL_UD:
-			if (oph->msg && oph->msg->data && oph->msg->len)
-				sgsn_api_trace_packet_tlli(bp->tlli, "bssgp", false,
-							   oph->msg->data, oph->msg->len);
+			if (oph->msg && msgb_bssgph(oph->msg))
+				sgsn_api_trace_packet_gb(NULL, bp->tlli, bp->nsei, "bssgp", false,
+							 msgb_bssgph(oph->msg), msgb_bssgp_len(oph->msg));
 			return gprs_llc_rcvmsg(oph->msg, bp->tp);
 		}
 		break;
@@ -127,6 +127,10 @@ int sgsn_bssgp_dispatch_ns_unitdata_req_cb(void *ctx, struct msgb *msg)
 {
 	struct gprs_ns2_inst *nsi = (struct gprs_ns2_inst *) ctx;
 	struct osmo_gprs_ns2_prim nsp = {};
+
+	sgsn_api_trace_packet_gb(NULL, msgb_tlli(msg), msgb_nsei(msg), "bssgp", true,
+				 msg->data, msgb_length(msg));
+
 	nsp.nsei = msgb_nsei(msg);
 	nsp.bvci = msgb_bvci(msg);
 	osmo_prim_init(&nsp.oph, SAP_NS, GPRS_NS2_PRIM_UNIT_DATA, PRIM_OP_REQUEST, msg);

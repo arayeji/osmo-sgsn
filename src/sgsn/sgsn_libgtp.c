@@ -119,7 +119,34 @@ const struct value_string gtp_cause_strs[] = {
 	{ 0, NULL }
 };
 
-static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size_t len)
+/* libgtp's trace hook does not pass the UDP peer, so the remote end is taken
+ * from the PDP context: the GGSN control address learned from Create PDP
+ * Response, or the configured GGSN before that. */
+static const char *trace_gtp_link(char *buf, size_t buf_len, const struct gsn_t *gsn,
+				  const struct sgsn_pdp_ctx *pctx, uint8_t version, bool tx)
+{
+	char local[INET_ADDRSTRLEN] = "?", remote[INET_ADDRSTRLEN];
+	uint16_t port = version == 0 ? GTP0_PORT : GTP1C_PORT;
+
+	if (gsn)
+		inet_ntop(AF_INET, &gsn->gsnc, local, sizeof(local));
+
+	if (pctx && pctx->lib && pctx->lib->gsnrc.l == 4)
+		inet_ntop(AF_INET, pctx->lib->gsnrc.v, remote, sizeof(remote));
+	else if (pctx && pctx->ggsn)
+		inet_ntop(AF_INET, &pctx->ggsn->remote_addr, remote, sizeof(remote));
+	else {
+		snprintf(buf, buf_len, " link=gn");
+		return buf;
+	}
+
+	snprintf(buf, buf_len, " link=gn src=%s:%u dst=%s:%u",
+		 tx ? local : remote, port, tx ? remote : local, port);
+	return buf;
+}
+
+static void trace_gtp_packet(const struct gsn_t *gsn, uint8_t version, bool tx,
+			     const uint8_t *data, size_t len)
 {
 	union gtpie_member **ie = NULL;
 	uint64_t imsi64 = 0;
@@ -128,7 +155,10 @@ static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size
 	const char *proto;
 	struct gtp1_header_short *gh1;
 	struct sgsn_pdp_ctx *pctx;
+	struct sgsn_mm_ctx *mm;
+	char link[SGSN_API_TRACE_LINK_MAX];
 	uint32_t teid = 0;
+	uint8_t nsapi;
 
 	if (!data || !len || !sgsn_api_trace_any_active())
 		return;
@@ -155,27 +185,27 @@ static void trace_gtp_packet(uint8_t version, bool tx, const uint8_t *data, size
 	if (len <= payload_off)
 		return;
 
+	pctx = sgsn_pdp_ctx_by_gtp_teid(teid);
+
+	/* Messages carrying an IMSI (e.g. Create PDP Request, TEID 0) are matched
+	 * to their PDP context by NSAPI. */
 	ie = talloc_zero_array(tall_sgsn_ctx, union gtpie_member *, GTPIE_SIZE);
-	if (!ie)
-		goto teid_lookup;
-
-	if (gtpie_decaps(ie, version, data + payload_off, len - payload_off) < 0)
-		goto teid_lookup;
-
-	if (gtpie_gettv8(ie, GTPIE_IMSI, 0, &imsi64) == 0) {
+	if (ie && gtpie_decaps(ie, version, data + payload_off, len - payload_off) >= 0 &&
+	    gtpie_gettv8(ie, GTPIE_IMSI, 0, &imsi64) == 0) {
 		imsi_str = imsi_gtp2str(&imsi64);
-		if (imsi_str && imsi_str[0]) {
-			sgsn_api_trace_packet(imsi_str, proto, tx, data, len);
-			goto out;
-		}
+		if (!pctx && imsi_str && imsi_str[0] &&
+		    (mm = sgsn_mm_ctx_by_imsi(imsi_str)) &&
+		    gtpie_gettv1(ie, GTPIE_NSAPI, 0, &nsapi) == 0)
+			pctx = sgsn_pdp_ctx_by_nsapi(mm, nsapi & 0x0f);
 	}
 
-teid_lookup:
-	pctx = sgsn_pdp_ctx_by_gtp_teid(teid);
-	if (pctx)
-		sgsn_api_trace_packet_pdp(pctx, proto, tx, data, len);
+	if ((!imsi_str || !imsi_str[0]) && pctx && pctx->mm)
+		imsi_str = pctx->mm->imsi;
+	if (imsi_str && imsi_str[0] && sgsn_api_trace_active(imsi_str))
+		sgsn_api_trace_packet(imsi_str, proto, tx,
+				      trace_gtp_link(link, sizeof(link), gsn, pctx, version, tx),
+				      data, len);
 
-out:
 	if (ie)
 		talloc_free(ie);
 }
@@ -183,9 +213,8 @@ out:
 static void cb_gtp_packet_trace(struct gsn_t *gsn, void *cbp, bool tx,
 				const uint8_t *data, size_t len, uint8_t version)
 {
-	(void)gsn;
 	(void)cbp;
-	trace_gtp_packet(version, tx, data, len);
+	trace_gtp_packet(gsn, version, tx, data, len);
 }
 
 /* Generate the GTP IMSI IE according to 09.60 Section 7.9.2 */
